@@ -1,0 +1,132 @@
+From 4bfae92 Mon Sep 17 00:00:00 2001
+From: Michael <you@example.com>
+Date: Fri, 1 Oct 2025 12:00:00 -0400
+Subject: [PATCH] Fix Zeus typo + add mobile drawer layout for companions
+
+---
+ components/AppLayout.tsx    | 113 ++++++++++++++++++++++++++++++++++++
+ components/Companions.tsx   |  52 +++++++++++++++-
+ 2 files changed, 164 insertions(+), 1 deletion(-)
+ create mode 100644 components/AppLayout.tsx
+
+diff --git a/components/AppLayout.tsx b/components/AppLayout.tsx
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/components/AppLayout.tsx
+@@
++"use client";
++import { useEffect, useState } from "react";
++import clsx from "clsx";
++
++type Props = { sidebar: React.ReactNode; children: React.ReactNode };
++
++export default function AppLayout({ sidebar, children }: Props) {
++  const [open, setOpen] = useState(false);
++
++  useEffect(() => {
++    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
++    window.addEventListener("keydown", onKey);
++    return () => window.removeEventListener("keydown", onKey);
++  }, []);
++
++  return (
++    <div className="h-dvh flex bg-surface text-default">
++      {/* Mobile Top Bar */}
++      <header className="md:hidden sticky top-0 z-40 flex items-center gap-2 px-3 py-2 border-b border-token bg-surface">
++        <button
++          className="inline-flex h-10 w-10 items-center justify-center rounded-md border border-token"
++          aria-controls="companions-drawer"
++          aria-expanded={open}
++          aria-label="Toggle companions"
++          onClick={() => setOpen(!open)}
++        >
++          <span aria-hidden className="text-default">☰</span>
++        </button>
++        <span className="font-medium">Reflections</span>
++      </header>
++
++      {/* Sidebar / Drawer */}
++      <aside
++        id="companions-drawer"
++        role="complementary"
++        className={clsx(
++          "z-50 md:z-auto md:static md:translate-x-0",
++          "h-full bg-surface border-r border-token",
++          "md:[width:var(--sidebar-w)] [width:var(--sidebar-w-sm)] [max-width:var(--sidebar-w-max)]",
++          "fixed top-0 left-0 transition-transform duration-200 ease-out",
++          open ? "translate-x-0" : "-translate-x-full",
++          "md:relative md:flex-shrink-0"
++        )}
++      >
++        {/* Drawer header (mobile only) */}
++        <div className="md:hidden flex items-center justify-between px-3 py-2 border-b border-token">
++          <span className="font-medium">Companions</span>
++          <button
++            className="h-9 w-9 grid place-items-center rounded-md border border-token"
++            aria-label="Close companions"
++            onClick={() => setOpen(false)}
++          >
++            ✕
++          </button>
++        </div>
++
++        {/* scroll area */}
++        <div className="[height:calc(100dvh-var(--topbar-h))] md:h-full overflow-y-auto">
++          {sidebar}
++        </div>
++      </aside>
++
++      {/* Backdrop */}
++      {open && (
++        <button
++          aria-label="Close companions"
++          onClick={() => setOpen(false)}
++          className="md:hidden fixed inset-0 z-40 bg-black/30"
++        />
++      )}
++
++      {/* Main chat */}
++      <main className="flex-1 min-w-0 flex flex-col">
++        <div className="hidden md:flex items-center gap-2 px-4 py-2 border-b border-token bg-surface">
++          <h1 className="text-lg font-medium">Chat</h1>
++        </div>
++        <div className="flex-1 min-h-0 bg-surface-muted">{children}</div>
++      </main>
++    </div>
++  );
++}
+diff --git a/components/Companions.tsx b/components/Companions.tsx
+index abcdef1..2222222 100644
+--- a/components/Companions.tsx
++++ b/components/Companions.tsx
+@@
+-  { id: "zeus",   name: "Zues",   desc: "Action Coach", color: "bg-[#ff3b30]" },
++  { id: "zeus",   name: "Zeus",   desc: "Action Coach", color: "bg-[#ff3b30]" }, 
+@@
+ export default function Companions() {
+-  return <div>Companions list here</div>;
++  return (
++    <div className="p-3 space-y-3">
++      {items.map((i) => (
++        <button
++          key={i.id}
++          className={clsx(
++            "w-full text-left rounded-xl px-4 py-3 border transition",
++            "border-token bg-surface hover:bg-surface-muted",
++            "focus:outline-none focus:ring-2 focus:ring-[var(--brand)]",
++            i.active && "ring-2 ring-[var(--brand)] shadow-sm"
++          )}
++        >
++          <div className="flex items-center gap-3">
++            <span className={clsx("h-3 w-3 rounded-full", i.color)} />
++            <div>
++              <div className="font-semibold">{i.name}</div>
++              <div className="text-sm text-muted">{i.desc}</div>
++            </div>
++          </div>
++        </button>
++      ))}
++    </div>
++  );
+ }
