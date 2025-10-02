@@ -1,12 +1,28 @@
-// middleware.ts
 import { NextRequest, NextResponse } from "next/server";
-import { verifyJwt } from "./lib/jwt";
+
+// Minimal JWT parse (no signature verify here; do full verify server-side)
+function parseJwt(token: string) {
+  try { return JSON.parse(Buffer.from(token.split(".")[1], "base64").toString("utf8")); }
+  catch { return null; }
+}
 
 export async function middleware(req: NextRequest) {
-  const token = req.cookies.get("access")?.value || req.headers.get("authorization")?.replace("Bearer ","");
-  const payload = token ? await verifyJwt(token).catch(() => null) : null;
+  const tier = process.env.NEXT_PUBLIC_APP_TIER || "public";
+  if (tier !== "founders") return NextResponse.next();
 
-  const isFounders = payload?.roles?.includes("founder");
-  if (!isFounders) return NextResponse.redirect(new URL("https://app.yourdomain.com/"));
+  const cookie = req.cookies.get("access")?.value;
+  const authz = req.headers.get("authorization");
+  const token = cookie || (authz?.startsWith("Bearer ") ? authz.slice(7) : "");
+  const payload = token ? parseJwt(token) : null;
+
+  const isFounders = Array.isArray(payload?.roles) && payload.roles.includes("founder");
+  if (!isFounders) {
+    const redirectURL = new URL("https://lab4-proof.onrender.com/", req.url);
+    return NextResponse.redirect(redirectURL);
+  }
   return NextResponse.next();
 }
+
+export const config = {
+  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+};
