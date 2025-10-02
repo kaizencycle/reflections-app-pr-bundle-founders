@@ -1,0 +1,168 @@
+name: PR Size Labeler
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  size_label:
+    runs-on: ubuntu-latest
+    env:
+      # Thresholds come from Repository → Settings → Actions → Variables
+      XS_MAX:  ${{ vars.SIZE_XS_MAX }}
+      S_MAX:   ${{ vars.SIZE_S_MAX }}
+      M_MAX:   ${{ vars.SIZE_M_MAX }}
+      L_MAX:   ${{ vars.SIZE_L_MAX }}
+      MAX_FILES_FOR_NON_XL: ${{ vars.MAX_FILES_FOR_NON_XL }}
+    steps:
+      - name: Install tools
+        run: |
+          sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Install GitHub CLI
+        uses: cli/gh-action@v2
+
+      - name: Fetch PR stats
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR=${{ github.event.pull_request.number }}
+          REPO=${{ github.repository }}
+          DATA=$(gh api repos/$REPO/pulls/$PR)
+          ADD=$(echo "$DATA" | jq -r '.additions')
+          DEL=$(echo "$DATA" | jq -r '.deletions')
+          FILES=$(echo "$DATA" | jq -r '.changed_files')
+          TOTAL=$(( ADD + DEL ))
+          echo "additions=$ADD deletions=$DEL files=$FILES total=$TOTAL"
+          echo "ADD=$ADD" >> $GITHUB_ENV
+          echo "DEL=$DEL" >> $GITHUB_ENV
+          echo "FILES=$FILES" >> $GITHUB_ENV
+          echo "TOTAL=$TOTAL" >> $GITHUB_ENV
+
+      - name: Decide size label
+        id: decide
+        run: |
+          TOTAL=${TOTAL:-0}
+          FILES=${FILES:-0}
+          XS_MAX=${XS_MAX:-19}
+          S_MAX=${S_MAX:-99}
+          M_MAX=${M_MAX:-499}
+          L_MAX=${L_MAX:-1499}
+          MAX_FILES_FOR_NON_XL=${MAX_FILES_FOR_NON_XL:-50}
+
+          label="size:XL"
+          if [ "$FILES" -le "$MAX_FILES_FOR_NON_XL" ]; then
+            if   [ "$TOTAL" -le "$XS_MAX" ]; then label="size:XS"
+            elif [ "$TOTAL" -le "$S_MAX"  ]; then label="size:S"
+            elif [ "$TOTAL" -le "$M_MAX"  ]; then label="size:M"
+            elif [ "$TOTAL" -le "$L_MAX"  ]; then label="size:L"
+            else label="size:XL"
+            fi
+          fi
+          echo "label=$label" >> $GITHUB_OUTPUT
+          echo "Selected label: $label"
+
+      - name: Ensure size labels exist
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          REPO=${{ github.repository }}
+          make_label () {
+            local name="$1"
+            local color="$2"
+            local desc="$3"
+            # create-or-update
+            gh api \
+              --method PATCH \
+              -H "Accept: application/vnd.github+json" \
+              "repos/$REPO/labels/$(echo "$name" | sed 's/ /%20/g')" \
+              -f new_name="$name" -f color="$color" -f description="$desc" >/dev/null 2>&1 || \
+            gh api \
+              --method POST \
+              -H "Accept: application/vnd.github+json" \
+              "repos/$REPO/labels" \
+              -f name="$name" -f color="$color" -f description="$desc" >/dev/null 2>&1 || true
+          }
+          
+          XS_PLUS_1=$(( ${XS_MAX:-19} + 1 ))
+          S_PLUS_1=$(( ${S_MAX:-99} + 1 ))
+          M_PLUS_1=$(( ${M_MAX:-499} + 1 ))
+          
+          make_label "size:XS" "ededed" "0–${XS_MAX:-19} lines changed"
+          make_label "size:S"  "36c5f0" "${XS_PLUS_1}–${S_MAX:-99} lines changed"
+          make_label "size:M"  "fbca04" "${S_PLUS_1}–${M_MAX:-499} lines changed"
+          make_label "size:L"  "d93f0b" "${M_PLUS_1}–${L_MAX:-1499} lines changed"
+          make_label "size:XL" "6f42c1" "${L_MAX:-1499}+ lines or >${MAX_FILES_FOR_NON_XL:-50} files"
+
+      - name: Remove previous size labels (if any)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR=${{ github.event.pull_request.number }}
+          REPO=${{ github.repository }}
+          existing=$(gh api repos/$REPO/issues/$PR/labels | jq -r '.[].name')
+          for l in $existing; do
+            case "$l" in
+              size:XS|size:S|size:M|size:L|size:XL)
+                gh api -X DELETE "repos/$REPO/issues/$PR/labels/$(echo $l | sed 's/:/%3A/')" || true
+                ;;
+            esac
+          done
+
+      - name: Apply size label
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR=${{ github.event.pull_request.number }}
+          LABEL="${{ steps.decide.outputs.label }}"
+          gh pr edit $PR --add-label "$LABEL"
+
+      - name: Post/update stats comment
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR=${{ github.event.pull_request.number }}
+          REPO=${{ github.repository }}
+          LABEL="${{ steps.decide.outputs.label }}"
+          marker="<!-- pr-size-labeler -->"
+          
+          XS_PLUS_1=$(( ${XS_MAX:-19} + 1 ))
+          S_PLUS_1=$(( ${S_MAX:-99} + 1 ))
+          M_PLUS_1=$(( ${M_MAX:-499} + 1 ))
+          
+          body="$(cat <<MD
+${marker}
+## 📊 PR Size Report
+
+| Metric | Value |
+|--------|-------|
+| **Additions** | ${ADD} |
+| **Deletions** | ${DEL} |
+| **Total delta** | ${TOTAL} |
+| **Files changed** | ${FILES} |
+| **Size label** | **${LABEL}** |
+
+### Size Thresholds
+- **XS**: 0–${XS_MAX:-19} lines
+- **S**: ${XS_PLUS_1}–${S_MAX:-99} lines  
+- **M**: ${S_PLUS_1}–${M_MAX:-499} lines
+- **L**: ${M_PLUS_1}–${L_MAX:-1499} lines
+- **XL**: ${L_MAX:-1499}+ lines or > ${MAX_FILES_FOR_NON_XL:-50} files
+
+*Thresholds are synchronized across all workflows via Actions Variables.*
+MD
+)"
+          
+          # Find an existing comment with the marker
+          comments=$(gh api repos/$REPO/issues/$PR/comments)
+          id=$(echo "$comments" | jq -r '.[] | select(.body | contains("'$marker'")) | .id' | head -n1)
+          if [ -n "$id" ] && [ "$id" != "null" ]; then
+            echo "Updating existing size comment (ID: $id)"
+            gh api -X PATCH repos/$REPO/issues/comments/$id -f body="$body" >/dev/null
+          else
+            echo "Creating new size comment"
+            gh pr comment $PR --body "$body" >/dev/null
+          fi

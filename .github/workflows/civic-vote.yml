@@ -1,0 +1,72 @@
+name: Civic Vote Gate
+on:
+  pull_request:
+    types: [opened, synchronize, labeled, reopened, edited]
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  vote:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Civic vote evaluation
+        env:
+          LEDGER_URL: ${{ secrets.LEDGER_URL }}
+          LEDGER_TOKEN: ${{ secrets.LEDGER_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          node scripts/civic-vote.mjs
+
+      - name: Require pass
+        id: require
+        run: |
+          test -f civic_vote_result.json || (echo "No result"; exit 1)
+          PASSED=$(jq -r '.passed' civic_vote_result.json)
+          echo "passed=$PASSED" >> $GITHUB_OUTPUT
+          if [ "$PASSED" != "true" ]; then
+            echo "Vote gate failed"; exit 1
+          fi
+
+      - name: Comment vote result
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -f civic_vote_result.json ]; then
+            cat > vote_comment.md <<'EOF'
+          ## 🏛️ Civic Vote Result
+          
+          EOF
+            
+            PASSED=$(jq -r '.passed' civic_vote_result.json)
+            YES=$(jq -r '.yes' civic_vote_result.json)
+            NO=$(jq -r '.no' civic_vote_result.json)
+            VOTES=$(jq -r '.votes' civic_vote_result.json)
+            QUORUM=$(jq -r '.quorum' civic_vote_result.json)
+            THRESHOLD=$(jq -r '.threshold' civic_vote_result.json)
+            LABEL_CLASS=$(jq -r '.labelClass' civic_vote_result.json)
+            
+            if [ "$PASSED" = "true" ]; then
+              echo "✅ **PASSED** - This PR meets civic governance requirements" >> vote_comment.md
+            else
+              echo "❌ **FAILED** - This PR does not meet civic governance requirements" >> vote_comment.md
+            fi
+            
+            echo "" >> vote_comment.md
+            echo "- **Votes:** ${YES} yes, ${NO} no (${VOTES} total)" >> vote_comment.md
+            echo "- **Quorum:** ${QUORUM} required, ${VOTES} participated" >> vote_comment.md
+            echo "- **Threshold:** ${THRESHOLD} required for ${LABEL_CLASS} changes" >> vote_comment.md
+            echo "- **Result:** $(echo "scale=2; $YES / $VOTES * 100" | bc -l)% approval" >> vote_comment.md
+            
+            gh pr comment ${{ github.event.pull_request.number }} --body-file vote_comment.md
+          fi

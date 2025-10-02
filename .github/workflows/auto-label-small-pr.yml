@@ -1,0 +1,65 @@
+name: Auto-label tiny & safe PRs as bot-suggest
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+    paths:
+      - 'src/**'
+      - 'docs/**'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  auto_label:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install GitHub CLI
+        uses: cli/gh-action@v2
+
+      - name: Decide and label
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Pull from repo-level Actions Variables so thresholds stay in sync
+          MAX_LINES: ${{ vars.SIZE_S_MAX }}    # treat <= S as "tiny"; adjust to SIZE_M_MAX if you prefer M
+          MAX_FILES: ${{ vars.MAX_FILES_FOR_NON_XL }}
+        run: |
+          set -e
+          PR=${{ github.event.pull_request.number }}
+          REPO=${{ github.repository }}
+          
+          # Get PR stats
+          json=$(gh api repos/$REPO/pulls/$PR)
+          add=$(echo "$json" | jq -r '.additions')
+          del=$(echo "$json" | jq -r '.deletions')
+          files=$(echo "$json" | jq -r '.changed_files')
+          size=$(( add + del ))
+          
+          echo "PR #$PR add:$add del:$del changed_files:$files total_delta:$size"
+          
+          # Only label if tiny AND no existing bot-suggest
+          has_label=$(echo "$json" | jq -r '[.labels[].name] | index("bot-suggest")')
+          if [ "$has_label" != "null" ]; then
+            echo "Already labeled bot-suggest; skipping."
+            exit 0
+          fi
+          
+          # Use fallback values if variables not set
+          MAX_LINES_VAL=${MAX_LINES:-99}
+          MAX_FILES_VAL=${MAX_FILES:-50}
+          
+          if [ "$size" -le "$MAX_LINES_VAL" ] && [ "$files" -le "$MAX_FILES_VAL" ]; then
+            gh pr edit $PR --add-label bot-suggest
+            echo "✅ Auto-labeled bot-suggest (size: $size lines, files: $files)"
+            
+            # Add a helpful comment
+            gh pr comment $PR --body "🤖 **Auto-labeled \`bot-suggest\`**
+
+This PR is small enough (≤${MAX_LINES_VAL} changed lines, ≤${MAX_FILES_VAL} files) and only touches safe paths (\`src/**\`, \`docs/**\`), so it's eligible for AI bot patch suggestions.
+
+The AI bot will analyze this PR and may propose a tiny, safe improvement as a draft PR.
+
+*Thresholds are synchronized with the PR size labeler via Actions Variables.*"
+          else
+            echo "PR too large for bot-suggest (size>$MAX_LINES_VAL or files>$MAX_FILES_VAL)."
+          fi

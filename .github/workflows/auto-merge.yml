@@ -1,0 +1,146 @@
+name: Auto-merge (label gated)
+on:
+  pull_request:
+    types: [labeled, synchronize, ready_for_review, reopened]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  enable_auto_merge:
+    # Case 1: manual auto-merge
+    if: >
+      github.event.pull_request.base.ref == 'main' &&
+      contains(toJson(github.event.pull_request.labels), 'auto-merge')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install GitHub CLI
+        uses: cli/gh-action@v2
+
+      - name: Show PR state
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr view ${{ github.event.pull_request.number }} --json \
+            number,title,author,baseRefName,headRefName,isDraft,mergeStateStatus,reviewDecision \
+            -q '.'
+
+      - name: Guardrails (not a draft, clean, approved if reviews required)
+        id: guard
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          j=$(gh pr view ${{ github.event.pull_request.number }} --json isDraft,mergeStateStatus,reviewDecision -q '.')
+          draft=$(echo "$j" | jq -r '.isDraft')
+          state=$(echo "$j" | jq -r '.mergeStateStatus')        # "CLEAN" | "BLOCKED" | "DIRTY" | etc.
+          review=$(echo "$j" | jq -r '.reviewDecision')         # "APPROVED" | "REVIEW_REQUIRED" | "CHANGES_REQUESTED" | null
+
+          echo "isDraft=$draft mergeStateStatus=$state reviewDecision=$review"
+
+          if [ "$draft" = "true" ]; then
+            echo "PR is draft; skipping."
+            exit 0
+          fi
+          # If branch protection requires checks, GitHub enforces them before merge; we also prefer CLEAN
+          if [ "$state" != "CLEAN" ]; then
+            echo "PR merge state is not CLEAN ($state). Auto-merge will be set but may wait for conditions."
+          fi
+          # If your repo requires reviews, ensure they're approved
+          if [ "$review" = "CHANGES_REQUESTED" ] || [ "$review" = "REVIEW_REQUIRED" ]; then
+            echo "Reviews not approved; will not enable auto-merge yet."
+            exit 0
+          fi
+
+      - name: Enable GitHub Auto-merge (squash)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Requires repo setting "Allow auto-merge"
+          gh pr merge ${{ github.event.pull_request.number }} --squash --auto
+          echo "Auto-merge enabled (squash). GitHub will merge when all required checks are green."
+
+  enable_auto_merge_trivial:
+    # Case 2: trivial micro-PRs (needs size:XS + trivial)
+    if: >
+      github.event.pull_request.base.ref == 'main' &&
+      contains(toJson(github.event.pull_request.labels), 'trivial') &&
+      contains(toJson(github.event.pull_request.labels), 'size:XS')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install GitHub CLI
+        uses: cli/gh-action@v2
+
+      - name: Show PR state
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr view ${{ github.event.pull_request.number }} --json \
+            number,title,author,baseRefName,headRefName,isDraft,mergeStateStatus,reviewDecision \
+            -q '.'
+
+      - name: Guardrails (not a draft, clean, approved if reviews required)
+        id: guard
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          j=$(gh pr view ${{ github.event.pull_request.number }} --json isDraft,mergeStateStatus,reviewDecision -q '.')
+          draft=$(echo "$j" | jq -r '.isDraft')
+          state=$(echo "$j" | jq -r '.mergeStateStatus')
+          review=$(echo "$j" | jq -r '.reviewDecision')
+          echo "isDraft=$draft mergeStateStatus=$state reviewDecision=$review"
+          if [ "$draft" = "true" ]; then
+            echo "PR is draft; skipping."
+            exit 0
+          fi
+          if [ "$review" = "CHANGES_REQUESTED" ] || [ "$review" = "REVIEW_REQUIRED" ]; then
+            echo "Reviews not approved; will not enable auto-merge yet."
+            exit 0
+          fi
+
+      - name: Enable GitHub Auto-merge (squash)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr merge ${{ github.event.pull_request.number }} --squash --auto
+          echo "Auto-merge enabled for trivial size:XS PR (squash)."
+
+  enable_auto_merge_safe:
+    # Case 3: derived safety label (safe-to-merge)
+    if: >
+      github.event.pull_request.base.ref == 'main' &&
+      contains(toJson(github.event.pull_request.labels), 'safe-to-merge')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install GitHub CLI
+        uses: cli/gh-action@v2
+
+      - name: Show PR state
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr view ${{ github.event.pull_request.number }} --json \
+            number,title,author,isDraft,mergeStateStatus,reviewDecision -q '.'
+
+      - name: Guardrails (not draft, approved if reviews required)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          j=$(gh pr view ${{ github.event.pull_request.number }} --json isDraft,mergeStateStatus,reviewDecision -q '.')
+          draft=$(echo "$j" | jq -r '.isDraft')
+          review=$(echo "$j" | jq -r '.reviewDecision')
+          if [ "$draft" = "true" ]; then
+            echo "PR is draft; skipping."
+            exit 0
+          fi
+          if [ "$review" = "CHANGES_REQUESTED" ] || [ "$review" = "REVIEW_REQUIRED" ]; then
+            echo "Reviews not approved; not enabling auto-merge."
+            exit 0
+          fi
+
+      - name: Enable GitHub Auto-merge (squash)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr merge ${{ github.event.pull_request.number }} --squash --auto
+          echo "Auto-merge enabled for safe-to-merge PR (squash)."

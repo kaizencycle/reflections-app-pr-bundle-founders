@@ -1,0 +1,14 @@
+# CODEOWNERS — sensitive areas require maintainer review
+# Default: require founder approval
+* @kaizencycle
+
+# Critical governance and workflow files
+.github/workflows/*  @kaizencycle
+policy/*             @kaizencycle
+security/*           @kaizencycle
+SECURITY.md          @kaizencycle
+scripts/civic-vote.mjs  @kaizencycle
+
+# Agent-managed areas (when agents are deployed)
+/agents/hermes/ @kaizencycle
+/agents/zeus/ @kaizencycle

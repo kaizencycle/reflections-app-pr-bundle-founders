@@ -1,0 +1,104 @@
+name: Fail-safe - unlabel on red checks
+on:
+  # Re-evaluate when PR updates or checks finish
+  pull_request:
+    types: [synchronize, reopened, edited, ready_for_review]
+  check_run:
+    types: [completed]
+  check_suite:
+    types: [completed]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  unlabel_on_red:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Install GitHub CLI
+        uses: cli/gh-action@v2
+
+      - name: Identify affected PRs
+        id: find
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          event=$(jq -r '.action // empty' "$GITHUB_EVENT_PATH")
+          prs_json="[]"
+
+          case "${{ github.event_name }}" in
+            pull_request)
+              # Direct PR event
+              prs_json=$(jq -nc --arg n "${{ github.event.pull_request.number }}" '[($n|tonumber)]')
+              ;;
+            check_run|check_suite)
+              # Collect PRs associated with the head SHA from the event payload
+              prs_json=$(jq -r '
+                (.check_run.pull_requests // .check_suite.pull_requests) // [] |
+                map(.number)
+              ' "$GITHUB_EVENT_PATH")
+              ;;
+          esac
+
+          # Fallback: empty array if nothing found
+          if [ -z "$prs_json" ] || [ "$prs_json" = "null" ]; then prs_json="[]"; fi
+          echo "prs=$prs_json" >> $GITHUB_OUTPUT
+          echo "Detected PRs: $prs_json"
+
+      - name: For each PR, remove labels if any checks failing
+        if: steps.find.outputs.prs != '[]'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          REPO="${{ github.repository }}"
+          PRS='${{ steps.find.outputs.prs }}'
+          for PR in $(echo "$PRS" | jq -r '.[]'); do
+            echo "Evaluating PR #$PR"
+            # Get head SHA
+            pr_json=$(gh api repos/$REPO/pulls/$PR)
+            SHA=$(echo "$pr_json" | jq -r '.head.sha')
+
+            # 1) Combined status (legacy statuses)
+            status_state=$(gh api repos/$REPO/commits/$SHA/status | jq -r '.state') # success|failure|pending|error
+            # 2) Check runs (GitHub Checks API)
+            checks_json=$(gh api "repos/$REPO/commits/$SHA/check-runs" -H "Accept: application/vnd.github+json")
+            failing_checks=$(echo "$checks_json" | jq -r '[.check_runs[] | select(.conclusion != null and .conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral")] | length')
+
+            echo "Status: $status_state | Failing checks: $failing_checks"
+
+            # Decide if red
+            RED=0
+            if [ "$status_state" = "failure" ] || [ "$status_state" = "error" ]; then RED=1; fi
+            if [ "$failing_checks" != "0" ]; then RED=1; fi
+
+            if [ "$RED" -eq 1 ]; then
+              echo "Red state detected — removing 'safe-to-merge' and 'auto-merge' labels."
+              # Remove labels if present (idempotent)
+              for L in safe-to-merge auto-merge; do
+                gh api -X DELETE "repos/$REPO/issues/$PR/labels/$L" >/dev/null 2>&1 || true
+              done
+              # Leave a single explanatory comment (update if already exists)
+              marker="<!-- auto-unlabel-on-red -->"
+              msg="${marker}
+⚠️ **Checks failing** on this PR (commit \`${SHA:0:7}\`). Removed labels:
+- \`safe-to-merge\`
+- \`auto-merge\` (if present)
+
+Auto-merge will re-engage once checks go green and required approvals are satisfied."
+              comments=$(gh api repos/$REPO/issues/$PR/comments)
+              id=$(echo "$comments" | jq -r '.[] | select(.body | contains("'$marker'")) | .id' | head -n1)
+              if [ -n "$id" ] && [ "$id" != "null" ]; then
+                gh api -X PATCH repos/$REPO/issues/comments/$id -f body="$msg" >/dev/null
+              else
+                gh pr comment $PR --body "$msg" >/dev/null
+              fi
+            else
+              echo "No red state — nothing to unlabel for PR #$PR."
+            fi
+          done

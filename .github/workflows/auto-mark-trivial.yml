@@ -1,0 +1,152 @@
+name: Auto-mark trivial PRs
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  trivial:
+    runs-on: ubuntu-latest
+    env:
+      # Treat PR as "very small" if total delta (additions+deletions) ≤ this
+      VERY_SMALL_MAX: "30"
+    steps:
+      - name: Install tools
+        run: |
+          sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Install GitHub CLI
+        uses: cli/gh-action@v2
+
+      - name: Fetch PR metadata
+        id: pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR=${{ github.event.pull_request.number }}
+          REPO=${{ github.repository }}
+          DATA=$(gh api repos/$REPO/pulls/$PR)
+          echo "additions=$(echo "$DATA" | jq -r '.additions')" >> $GITHUB_OUTPUT
+          echo "deletions=$(echo "$DATA" | jq -r '.deletions')" >> $GITHUB_OUTPUT
+          echo "files=$(echo "$DATA" | jq -r '.changed_files')" >> $GITHUB_OUTPUT
+
+      - name: Get file list and unified diff
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr view ${{ github.event.pull_request.number }} --json files -q '.files[].path' > files.txt
+          gh pr diff ${{ github.event.pull_request.number }} --patch > diff.patch
+          echo "Changed files:"; cat files.txt || true
+
+      - name: Decide if trivial
+        id: decide
+        run: |
+          set -e
+          ADD=${{ steps.pr.outputs.additions }}
+          DEL=${{ steps.pr.outputs.deletions }}
+          TOTAL=$(( ADD + DEL ))
+          VERY_SMALL_MAX=${VERY_SMALL_MAX:-30}
+
+          # 1) docs-only?
+          if [ -s files.txt ]; then
+            if awk '
+              {f=$0}
+              ! (f ~ /^docs\// || f ~ /\.md$/ || f ~ /\.txt$/ || f ~ /\.rst$/) { exit 1 }
+            ' files.txt; then
+              echo "reason=docs-only" >> $GITHUB_OUTPUT
+              echo "trivial=true" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+          fi
+
+          # 2) whitespace-only in non-doc files?
+          # Strip context and headers; keep only added/removed lines; remove leading +/- and whitespace.
+          if [ -s diff.patch ]; then
+            NONWS=$(grep -E '^[\+\-]' diff.patch | grep -Ev '^\+\+\+|^\-\-\-' | sed -E 's/^[\+\-]//' | sed -E 's/[[:space:]]//g' | sed '/^$/d' | wc -l | tr -d ' ')
+          else
+            NONWS=0
+          fi
+          if [ "$NONWS" = "0" ]; then
+            echo "reason=whitespace-only" >> $GITHUB_OUTPUT
+            echo "trivial=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # 3) very small textual tweak?
+          if [ "$TOTAL" -le "$VERY_SMALL_MAX" ]; then
+            echo "reason=very-small ($TOTAL ≤ $VERY_SMALL_MAX)" >> $GITHUB_OUTPUT
+            echo "trivial=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "reason=not-trivial" >> $GITHUB_OUTPUT
+          echo "trivial=false" >> $GITHUB_OUTPUT
+
+      - name: Ensure 'trivial' label exists
+        if: steps.decide.outputs.trivial == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          REPO=${{ github.repository }}
+          NAME="trivial"
+          COLOR="bfd4f2"
+          DESC="Docs-only, whitespace-only, or very small changes"
+          gh api \
+            --method PATCH \
+            -H "Accept: application/vnd.github+json" \
+            "repos/$REPO/labels/$NAME" \
+            -f new_name="$NAME" -f color="$COLOR" -f description="$DESC" >/dev/null 2>&1 || \
+          gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            "repos/$REPO/labels" \
+            -f name="$NAME" -f color="$COLOR" -f description="$DESC" >/dev/null 2>&1 || true
+
+      - name: Apply 'trivial' label (idempotent)
+        if: steps.decide.outputs.trivial == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr edit ${{ github.event.pull_request.number }} --add-label trivial
+
+      - name: Leave explanatory comment
+        if: steps.decide.outputs.trivial == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          REASON="${{ steps.decide.outputs.reason }}"
+          gh pr comment ${{ github.event.pull_request.number }} --body "🤖 This PR was automatically marked **trivial** because: **$REASON**.
+
+- Docs-only, whitespace-only, or very small changes are considered trivial.
+- If you think this is incorrect, you can remove the label manually."
+
+      - name: Ensure 'safe-to-merge' label exists
+        if: steps.decide.outputs.trivial == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          REPO=${{ github.repository }}
+          NAME="safe-to-merge"
+          COLOR="0e8a16"
+          DESC="Low-risk changes; eligible for auto-merge once checks pass"
+          gh api \
+            --method PATCH \
+            -H "Accept: application/vnd.github+json" \
+            "repos/$REPO/labels/$NAME" \
+            -f new_name="$NAME" -f color="$COLOR" -f description="$DESC" >/dev/null 2>&1 || \
+          gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            "repos/$REPO/labels" \
+            -f name="$NAME" -f color="$COLOR" -f description="$DESC" >/dev/null 2>&1 || true
+
+      - name: Apply 'safe-to-merge' label (idempotent)
+        if: steps.decide.outputs.trivial == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr edit ${{ github.event.pull_request.number }} --add-label safe-to-merge
+          gh pr comment ${{ github.event.pull_request.number }} --body "✅ Marked **safe-to-merge** (derived from **trivial**). Auto-merge may engage once all checks/approvals are satisfied."
