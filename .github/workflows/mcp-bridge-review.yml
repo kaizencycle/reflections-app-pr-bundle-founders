@@ -1,0 +1,116 @@
+name: MCP Bridge AI Review
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  mcp-review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install GitHub CLI
+        uses: cli/gh-action@v2
+
+      - name: Get PR diff
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr diff ${{ github.event.pull_request.number }} --patch > pr_diff.patch
+          wc -c pr_diff.patch
+
+      - name: Build review prompt
+        run: |
+          cat > review_prompt.txt <<'PROMPT'
+          You are a civic-governance code reviewer with access to MCP tools. 
+          
+          Analyze this PR diff and:
+          1. Check for security vulnerabilities and auth bypasses
+          2. Verify civic governance rules aren't being weakened
+          3. Suggest improvements using available MCP tools
+          4. Flag any changes that need Elder/Founder approval
+          
+          Available MCP tools via bridge:
+          - codebase_search: semantic code analysis
+          - grep: pattern matching
+          - read_file: examine specific files
+          - web_search: research best practices
+          
+          Focus on governance, security, and architectural concerns.
+          PROMPT
+
+      - name: Call GitHub Models for planning
+        id: planning
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Create input for GitHub Models
+          cat review_prompt.txt > model_input.txt
+          echo -e "\n\n--- PR DIFF ---\n" >> model_input.txt
+          cat pr_diff.patch >> model_input.txt
+          
+          # Call GitHub Models API
+          gh api -X POST "repos/${{ github.repository }}/models/runs" \
+            -f model="gpt-4o" \
+            -f input@"model_input.txt" \
+            -f max_tokens=2000 > model_response.json || {
+              echo "GitHub Models not available, using fallback review"
+              echo '{"output": "GitHub Models API unavailable. Manual review recommended."}' > model_response.json
+            }
+          
+          # Extract the model output
+          jq -r '.output // .result // .content // "No response"' model_response.json > model_plan.txt
+
+      - name: Execute MCP tools via bridge
+        env:
+          MCP_BRIDGE_URL: ${{ secrets.MCP_BRIDGE_URL }}
+          MCP_BRIDGE_TOKEN: ${{ secrets.MCP_BRIDGE_TOKEN }}
+        run: |
+          if [ -n "$MCP_BRIDGE_URL" ]; then
+            # Send model plan to MCP bridge for tool execution
+            curl -s -X POST "$MCP_BRIDGE_URL/execute" \
+              -H "Authorization: Bearer $MCP_BRIDGE_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d @model_response.json > mcp_results.json || {
+                echo "MCP bridge unavailable, using model output only"
+                cp model_plan.txt mcp_results.json
+              }
+          else
+            echo "MCP bridge not configured, using model output only"
+            cp model_plan.txt mcp_results.json
+          fi
+
+      - name: Comment MCP-enhanced review
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cat > final_review.md <<'HEADER'
+          ## 🤖 MCP-Enhanced AI Review
+          
+          *Powered by GitHub Models + MCP Bridge*
+          
+          HEADER
+          
+          if [ -f mcp_results.json ]; then
+            echo "### Analysis Results" >> final_review.md
+            echo "" >> final_review.md
+            cat mcp_results.json >> final_review.md
+          else
+            echo "### Fallback Review" >> final_review.md
+            echo "" >> final_review.md
+            cat model_plan.txt >> final_review.md
+          fi
+          
+          echo "" >> final_review.md
+          echo "---" >> final_review.md
+          echo "*This review used MCP tools for enhanced analysis. Results are advisory only.*" >> final_review.md
+          
+          gh pr comment ${{ github.event.pull_request.number }} --body-file final_review.md

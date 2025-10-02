@@ -1,0 +1,152 @@
+name: AI PR Review (OpenAI Fallback)
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install GitHub CLI
+        uses: cli/gh-action@v2
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install requests
+
+      - name: Fetch PR diff
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr diff ${{ github.event.pull_request.number }} --patch > diff.patch
+          echo "Diff size: $(wc -c < diff.patch) bytes"
+
+      - name: Build prompt
+        run: |
+          cat > prompt.txt <<'TXT'
+          You are a meticulous code reviewer for a React/Next.js reflections app. Given a unified diff from a pull request:
+          
+          1) **Security & Critical Issues**: Flag any high-severity problems (security vulnerabilities, auth bypasses, data loss risks, performance bottlenecks)
+          2) **Code Quality**: Check for React best practices, proper error handling, accessibility concerns, and TypeScript usage
+          3) **Architecture**: Evaluate component structure, state management, and API design patterns
+          4) **Testing**: Suggest areas that need test coverage or improved testing
+          5) **Improvements**: Provide specific, actionable suggestions with code examples when helpful
+          
+          Focus on the most impactful feedback. If you see obvious fixes, include small unified diff snippets.
+          
+          Output concise Markdown with clear headings, bullet points, and fenced code blocks for any suggested patches.
+          TXT
+
+      - name: Call OpenAI API
+        id: llm
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python - <<'PY'
+          import os, requests, json, sys
+          
+          def read_file(path, max_bytes=120000):
+              """Read file with size limit to avoid token overflow"""
+              try:
+                  with open(path, 'rb') as f:
+                      content = f.read()
+                  # Truncate if too large and add notice
+                  if len(content) > max_bytes:
+                      content = content[:max_bytes]
+                      truncated_notice = b"\n\n[TRUNCATED: Diff was too large, showing first " + str(max_bytes).encode() + b" bytes]"
+                      content += truncated_notice
+                  return content.decode('utf-8', errors='ignore')
+              except Exception as e:
+                  print(f"Error reading {path}: {e}")
+                  return ""
+          
+          # Read prompt and diff
+          prompt = read_file('prompt.txt')
+          diff = read_file('diff.patch')
+          
+          if not diff.strip():
+              print("No diff content found, skipping AI review")
+              with open("review.md", "w") as f:
+                  f.write("## 🤖 AI Review\n\nNo changes detected in this PR.")
+              sys.exit(0)
+          
+          # Prepare OpenAI API request
+          messages = [
+              {
+                  "role": "system", 
+                  "content": "You are a strict, helpful code reviewer specializing in React/Next.js applications. Provide actionable, specific feedback."
+              },
+              {
+                  "role": "user", 
+                  "content": f"{prompt}\n\n---\n**DIFF START**\n{diff}\n**DIFF END**\n"
+              }
+          ]
+          
+          headers = {
+              "Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}",
+              "Content-Type": "application/json"
+          }
+          
+          body = {
+              "model": "gpt-4o-mini",  # Cost-effective model, change to gpt-4o for higher quality
+              "messages": messages,
+              "temperature": 0.2,
+              "max_tokens": 2000  # Reasonable limit for PR reviews
+          }
+          
+          try:
+              print("Calling OpenAI API...")
+              response = requests.post(
+                  "https://api.openai.com/v1/chat/completions",
+                  headers=headers, 
+                  data=json.dumps(body), 
+                  timeout=120
+              )
+              response.raise_for_status()
+              
+              result = response.json()
+              review_content = result["choices"][0]["message"]["content"]
+              
+              with open("review.md", "w", encoding='utf-8') as f:
+                  f.write(review_content)
+              
+              print(f"✅ Review generated: {len(review_content)} characters")
+              
+          except requests.exceptions.RequestException as e:
+              print(f"❌ OpenAI API error: {e}")
+              with open("review.md", "w") as f:
+                  f.write(f"## 🤖 AI Review Error\n\nFailed to generate review: {str(e)}\n\nPlease review this PR manually.")
+          
+          except Exception as e:
+              print(f"❌ Unexpected error: {e}")
+              with open("review.md", "w") as f:
+                  f.write(f"## 🤖 AI Review Error\n\nUnexpected error occurred: {str(e)}\n\nPlease review this PR manually.")
+          PY
+
+      - name: Comment on PR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Add header with metadata
+          cat > final_review.md <<'HEADER'
+          ## 🤖 AI Code Review (OpenAI)
+          
+          *Automated review powered by OpenAI GPT-4o-mini*
+          
+          ---
+          
+          HEADER
+          
+          cat review.md >> final_review.md
+          
+          # Post the review comment
+          gh pr comment ${{ github.event.pull_request.number }} --body-file final_review.md
+

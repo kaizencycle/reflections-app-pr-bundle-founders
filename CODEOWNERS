@@ -1,0 +1,15 @@
+# Civic Governance CODEOWNERS
+# Humans + agent apps can be owners. Adjust handles/team slugs to your org.
+
+# Default: require founder approval
+* @kaizencycle
+
+# Critical governance files require founders
+/policy/ @your-org/founders
+/scripts/ @your-org/founders
+/.github/ @your-org/founders
+/SECURITY.md @your-org/founders
+
+# Agent-managed areas
+/agents/hermes/ @bot-hermes
+/agents/zeus/ @bot-zeus
