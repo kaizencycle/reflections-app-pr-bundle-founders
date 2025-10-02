@@ -1,0 +1,243 @@
+name: AI Bot Patch (Open a tiny fix PR)
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+    # Only consider diffs inside safe paths
+    paths:
+      - 'src/**'
+      - 'docs/**'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bot_patch:
+    # Require the PR to carry the label `bot-suggest`
+    if: contains(toJson(github.event.pull_request.labels), 'bot-suggest')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install tools
+        run: |
+          sudo apt-get update && sudo apt-get install -y jq
+          python -m pip install --upgrade pip
+          python -m pip install requests
+
+      - name: Grab PR diff
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr diff ${{ github.event.pull_request.number }} --patch > diff.patch
+          wc -l diff.patch || true
+
+      - name: Build minimal-fix prompt
+        run: |
+          cat > prompt.txt <<'TXT'
+You are a cautious senior engineer. Given a unified diff from a GitHub PR, propose at most a
+SMALL, SAFE, SELF-CONTAINED FIX in unified diff format. Keep diffs tiny (≤ 200 changed lines, ≤ 5 files).
+Do NOT modify sensitive areas:
+- .github/workflows/*
+- policy/*
+- security/* or SECURITY.md
+- scripts/civic-vote.mjs
+
+Only output ONE fenced code block containing the unified diff (no prose).
+Fence it with ```diff (or ```patch) and include proper headers (---/+++), e.g.:
+```diff
+--- a/file.js
++++ b/file.js
+@@ -1,3 +1,3 @@
+-old
++new
+```
+TXT
+
+      - name: Call model to propose tiny patch (GitHub Models if available; else OpenAI)
+        id: call
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -e
+          USE_GH_MODELS=1
+          if [ -z "${GITHUB_TOKEN}" ]; then
+            echo "No GITHUB_TOKEN; cannot use GitHub Models."
+            USE_GH_MODELS=0
+          fi
+
+          if [ "$USE_GH_MODELS" = "1" ]; then
+            echo "Using GitHub Models…"
+            gh api -X POST "repos/${{ github.repository }}/models/runs" \
+              -F model="gpt-4o" \
+              -F input@"prompt.txt" \
+              -F input@"diff.patch" > run.json || echo "{}" > run.json
+            cat run.json | jq -r '.output' > model_out.md || true
+          else
+            echo "Falling back to OpenAI…"
+            python - <<'PY'
+import os, json, requests
+def read(p, n=120000):
+  b=open(p,'rb').read()
+  return b[:n].decode('utf-8','ignore')
+prompt = read('prompt.txt')
+diff = read('diff.patch')
+messages = [
+  {"role":"system","content":"You propose tiny, safe patches only."},
+  {"role":"user","content": prompt + "\n\n---\nDIFF START\n" + diff + "\nDIFF END\n"}
+]
+hdr = {"Authorization": f"Bearer {os.environ.get('OPENAI_API_KEY','')}",
+       "Content-Type":"application/json"}
+body = {"model":"gpt-4o-mini","messages":messages,"temperature":0.1}
+r = requests.post("https://api.openai.com/v1/chat/completions", headers=hdr, data=json.dumps(body), timeout=120)
+out = r.json().get("choices",[{}])[0].get("message",{}).get("content","")
+open("model_out.md","w").write(out)
+PY
+          fi
+
+          if [ ! -s model_out.md ]; then
+            echo "No model output; exiting gracefully."
+            echo "skip=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+      - name: Extract and validate diff
+        id: extract
+        run: |
+          cat > scripts/extract_and_apply_patch.py <<'PY'
+#!/usr/bin/env python3
+import argparse, re, subprocess, sys, os, tempfile
+
+"""
+Parses model output for a single fenced unified diff (```diff ...``` or ```patch ...```),
+validates size and path constraints, and optionally applies it.
+"""
+
+FENCE_RE = re.compile(r"```(?:diff|patch)\s*(.*?)```", re.DOTALL|re.IGNORECASE)
+SENSITIVE = [
+    r"^\.github/workflows/.*",
+    r"^policy/.*",
+    r"^security/.*",
+    r"^SECURITY\.md$",
+    r"^scripts/civic-vote\.mjs$",
+]
+MAX_CHANGED_LINES = 200
+MAX_FILES = 5
+
+def extract_diff(md: str) -> str:
+    m = FENCE_RE.search(md)
+    if not m:
+        return ""
+    diff = m.group(1).strip()
+    # Ensure unified diff headers present
+    if ("--- " not in diff) or ("+++ " not in diff):
+        return ""
+    return diff
+
+def count_changed_lines(diff: str) -> int:
+    cnt = 0
+    for line in diff.splitlines():
+        if line.startswith("+") and not line.startswith("+++"):
+            cnt += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            cnt += 1
+    return cnt
+
+def list_touched_files(diff: str):
+    files = []
+    for line in diff.splitlines():
+        if line.startswith("--- "):
+            path = line[4:].strip()
+            if path.startswith("a/"): path = path[2:]
+            files.append(path)
+    # Deduplicate and filter Nones
+    files = [f for f in dict.fromkeys(files) if f and f != "/dev/null"]
+    return files
+
+def is_sensitive(path: str) -> bool:
+    for pat in SENSITIVE:
+        if re.match(pat, path):
+            return True
+    return False
+
+def main():
+    md = open("model_out.md", "r", encoding="utf-8", errors="ignore").read()
+    diff = extract_diff(md)
+    if not diff:
+        open("suggested.patch", "w").close()
+        print("No valid diff found.")
+        sys.exit(0)
+
+    # Validate size
+    changed = count_changed_lines(diff)
+    files = list_touched_files(diff)
+    if changed > MAX_CHANGED_LINES or len(files) > MAX_FILES:
+        print(f"Patch too large: {changed} changed lines across {len(files)} files (max {MAX_CHANGED_LINES}/{MAX_FILES}).", file=sys.stderr)
+        sys.exit(1)
+
+    # Validate paths
+    for p in files:
+        if is_sensitive(p):
+            print(f"Sensitive path touched: {p}", file=sys.stderr)
+            sys.exit(1)
+
+    # Write patch and apply
+    with open("suggested.patch", "w") as f:
+        f.write(diff + ("\n" if not diff.endswith("\n") else ""))
+    
+    # Dry-run and apply to working tree
+    try:
+        subprocess.run(["git", "apply", "--check", "suggested.patch"], check=True, capture_output=True)
+        subprocess.run(["git", "apply", "suggested.patch"], check=True)
+        print("Applied tiny patch OK.")
+    except subprocess.CalledProcessError as e:
+        print("git apply failed (safety abort):", e.stderr.decode("utf-8", "ignore"), file=sys.stderr)
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
+PY
+          python scripts/extract_and_apply_patch.py || {
+            echo "::notice ::No safe tiny patch."
+            echo "skip=true" >> $GITHUB_OUTPUT
+          }
+
+      - name: Create draft PR with bot branch
+        if: steps.extract.outputs.skip != 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          if git diff --quiet; then
+            echo "No working tree changes after patch; skipping PR."
+            exit 0
+          fi
+          
+          BR="bot/ai-patch-${{ github.run_id }}"
+          git config user.name "cathedral-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git checkout -b "$BR"
+          git add -A
+          
+          if git diff --cached --quiet; then
+            echo "No staged changes; skip."
+            exit 0
+          fi
+          
+          git commit -m "bot: tiny fix from AI suggestion"
+          git push -u origin "$BR"
+          gh pr create \
+            --base "${{ github.event.pull_request.base.ref }}" \
+            --head "$BR" \
+            --title "bot: tiny fix from AI suggestion" \
+            --body "🤖 Automated tiny patch proposed by AI. Please review carefully before merging.
+
+**Source PR:** #${{ github.event.pull_request.number }}
+**Safety checks:** ✅ Size limits, path restrictions, sensitive area protection
+
+This draft PR was created because the source PR was labeled \`bot-suggest\` and met safety criteria." \
+            --draft

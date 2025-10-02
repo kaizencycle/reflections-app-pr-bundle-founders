@@ -1,0 +1,52 @@
+name: Guard bot-suggest label
+on:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ensure only maintainers can set bot-suggest
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Comma-separated GitHub handles allowed to add/remove bot-suggest
+          ALLOWED_LABELERS: ${{ vars.ALLOWED_LABELERS }}
+        run: |
+          set -e
+          LABEL="${{ github.event.label.name }}"
+          if [ "$LABEL" != "bot-suggest" ]; then
+            echo "Different label; ignoring."
+            exit 0
+          fi
+          
+          # Build allowlist
+          ALLOWED="${ALLOWED_LABELERS:-kaizencycle}"
+          ACTOR="${{ github.actor }}"
+          IFS=',' read -ra AL <<< "$ALLOWED"
+          OK=0
+          for a in "${AL[@]}"; do
+            if [ "$ACTOR" = "$(echo "$a" | xargs)" ]; then OK=1; fi
+          done
+          
+          if [ $OK -eq 1 ]; then
+            echo "Actor '$ACTOR' is allowed to set bot-suggest."
+            exit 0
+          fi
+          
+          echo "Actor '$ACTOR' not allowed to set bot-suggest. Removing…"
+          # Remove the label
+          gh api -X DELETE \
+            "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/labels/bot-suggest" || true
+          
+          # Leave a note
+          gh pr comment ${{ github.event.pull_request.number }} \
+            --body ":no_entry: Only maintainers can apply **bot-suggest** label. If you think this is an error, ping @kaizencycle.
+
+**Allowed labelers:** ${ALLOWED}
+**Your handle:** @${ACTOR}"
