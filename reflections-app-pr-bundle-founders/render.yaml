@@ -1,0 +1,42 @@
+services:
+  - type: web
+    name: mock-ledger
+    env: node
+    plan: free
+    region: oregon
+    buildCommand: "npm ci --no-audit --no-fund"
+    startCommand: "npm start"
+    autoDeploy: true
+    rootDir: mock-ledger
+    envVars:
+      - key: QUORUM
+        value: "150"
+      - key: THRESHOLD_DEFAULT
+        value: "0.55"
+      - key: THRESHOLD_DOCS
+        value: "0.50"
+      - key: THRESHOLD_BREAKING
+        value: "0.66"
+      - key: FREEZE
+        value: "false"
+      - key: BIAS
+        value: ""
+      - key: ADMIN_KEY
+        sync: false   # set in Render dashboard as secret
+
+  - type: web
+    name: mcp-bridge
+    env: node
+    plan: free
+    region: oregon
+    buildCommand: "npm ci --no-audit --no-fund"
+    startCommand: "npm start"
+    autoDeploy: true
+    rootDir: mcp-bridge
+    envVars:
+      - key: MCP_SERVER_URL
+        sync: false   # set to your MCP server URL
+      - key: BRIDGE_TOKEN
+        sync: false   # set as secret in Render dashboard
+      - key: RATE_LIMIT_PER_HOUR
+        value: "100"

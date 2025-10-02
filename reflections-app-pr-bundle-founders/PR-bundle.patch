@@ -1,0 +1,468 @@
+From 0310abc Mon Sep 17 00:00:00 2001
+From: Founders Bundle <you@example.com>
+Date: Wed, 1 Oct 2025 14:15:00 -0400
+Subject: [PATCH] Founders bundle: drawer sidebar, auth.ts, Zustand store,
+ features, middleware, env, README
+
+---
+ .env.example                          |  16 ++++
+ README.md                             |  46 +++++++++++-
+ middleware.ts                         |  47 ++++++++++++
+ src/components/AppLayout.tsx          | 118 ++++++++++++++++++++++++++++++
+ src/components/Companions.tsx         |  58 ++++++++++----
+ src/config/features.ts                |  41 ++++++++++
+ src/stores/authStore.ts               |  35 ++++++++
+ src/lib/auth.ts                       | 190 +++++++++++++++++++++++++++++++++++
+ 8 files changed, 530 insertions(+), 21 deletions(-)
+ create mode 100644 .env.example
+ create mode 100644 middleware.ts
+ create mode 100644 src/components/AppLayout.tsx
+ create mode 100644 src/config/features.ts
+ create mode 100644 src/stores/authStore.ts
+ create mode 100644 src/lib/auth.ts
+
+diff --git a/.env.example b/.env.example
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/.env.example
+@@ -0,0 +1,16 @@
++# Frontend configuration
++NEXT_PUBLIC_AUTH_BASE=https://api.yourdomain.com
++NEXT_PUBLIC_USE_COOKIE_REFRESH=true
++NEXT_PUBLIC_APP_TIER=public   # public | founders
++
++# Optional: set this in founders deployment only
++SIGNUPS_DISABLED=false
++
++# Node version pin (optional if using nvm)
++# add .nvmrc with: v20
+diff --git a/README.md b/README.md
+index 3d3d3d3..4f4f4f4 100644
+--- a/README.md
++++ b/README.md
+@@ -1,6 +1,50 @@
+-🔮 Reflections Chat Application (Frontend)
+-This is the front-end repository for the Reflections specialized AI chat application. This application is built with React and Tailwind CSS and connects to a separate, custom FastAPI backend for all AI logic.
++# Reflections App
++
++Two deployments:
++
++- **Public onboarding** → `https://lab4-proof.onrender.com`
++- **Founders PAW** (private, JADE/HERMES/EVE/ZEUS) → `https://reflections-app.onrender.com`
+ 
+ ## 🤖 AI-Powered PR Reviews
+ 
+@@ -20,6 +64,46 @@ The workflows are already configured in `.github/workflows/` - just push and cr
+ 
+ ---
+ 
++## Setup
++1. Copy `.env.example` → `.env.local` and fill values.
++2. Install deps: `npm i`
++3. Dev: `npm run dev`
++
++### Env flags
++
++| var | public | founders |
++|-----|--------|----------|
++| `NEXT_PUBLIC_APP_TIER` | `public` | `founders` |
++| `NEXT_PUBLIC_AUTH_BASE` | your API base | same |
++| `NEXT_PUBLIC_USE_COOKIE_REFRESH` | `true` (recommended) | `true` |
++| `SIGNUPS_DISABLED` | `false` | `true` (optional) |
++
++### Auth API (expected)
++- `POST /auth/register` → `{ email, password, ... }` → may return tokens
++- `POST /auth/login` → `{ email, password }` → `{ accessToken, refreshToken?, user }`
++- `POST /auth/refresh` → `{ refreshToken }` or cookie → `{ accessToken, refreshToken?, user? }`
++- `POST /auth/logout` → clears cookie or accepts `{ refreshToken }`
++
++### Founders-only guard
++The `middleware.ts` checks JWT, requires `roles: ["founder"]` for the Founders app.
++Admin can seed founders by updating `users.roles`.
++
++### UI
++- Mobile: companions sidebar is **off-canvas** drawer
++- Desktop: fixed ~320px sidebar
++- Accessibility: Esc-to-close, ARIA attrs, backdrop
++
++### Packages added
++`clsx`, `zustand`
++
++---
++
+ ## ⚙️ Setup and Installation
+ 
+ ### Prerequisites
+diff --git a/middleware.ts b/middleware.ts
+index 1111111..2222222 100644
+--- a/middleware.ts
++++ b/middleware.ts
+@@ -1,28 +1,47 @@
+-import { NextRequest, NextResponse } from 'next/server'
++import { NextRequest, NextResponse } from "next/server";
+ 
+-export function middleware(request: NextRequest) {
+-  // Add any middleware logic here
+-  return NextResponse.next()
++// Minimal JWT parse (no signature verify here; do full verify server-side)
++function parseJwt(token: string) {
++  try { return JSON.parse(Buffer.from(token.split(".")[1], "base64").toString("utf8")); }
++  catch { return null; }
+ }
+ 
++export async function middleware(req: NextRequest) {
++  const tier = process.env.NEXT_PUBLIC_APP_TIER || "public";
++  if (tier !== "founders") return NextResponse.next();
++
++  const cookie = req.cookies.get("access")?.value;
++  const authz = req.headers.get("authorization");
++  const token = cookie || (authz?.startsWith("Bearer ") ? authz.slice(7) : "");
++  const payload = token ? parseJwt(token) : null;
++
++  const isFounders = Array.isArray(payload?.roles) && payload.roles.includes("founder");
++  if (!isFounders) {
++    const redirectURL = new URL("https://lab4-proof.onrender.com/", req.url);
++    return NextResponse.redirect(redirectURL);
++  }
++  return NextResponse.next();
++}
++
+ export const config = {
+-  matcher: [
+-    /*
+-     * Match all request paths except for the ones starting with:
+-     * - api (API routes)
+-     * - _next/static (static files)
+-     * - _next/image (image optimization files)
+-     * - favicon.ico (favicon file)
+-     */
+-    '/((?!api|_next/static|_next/image|favicon.ico).*)',
+-  ],
+-}
++  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
++};
+diff --git a/src/components/AppLayout.tsx b/src/components/AppLayout.tsx
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/src/components/AppLayout.tsx
+@@ -0,0 +1,118 @@
++"use client";
++import { useEffect, useState } from "react";
++import clsx from "clsx";
++
++type Props = { sidebar: React.ReactNode; children: React.ReactNode };
++
++export default function AppLayout({ sidebar, children }: Props) {
++  const [open, setOpen] = useState(false);
++
++  useEffect(() => {
++    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
++    window.addEventListener("keydown", onKey);
++    return () => window.removeEventListener("keydown", onKey);
++  }, []);
++
++  return (
++    <div className="h-dvh flex bg-surface text-default">
++      {/* Mobile Top Bar */}
++      <header className="md:hidden sticky top-0 z-40 flex items-center gap-2 px-3 py-2 border-b border-token bg-surface">
++        <button
++          className="inline-flex h-10 w-10 items-center justify-center rounded-md border border-token"
++          aria-controls="companions-drawer"
++          aria-expanded={open}
++          aria-label="Toggle companions"
++          onClick={() => setOpen(!open)}
++        >
++          <span aria-hidden className="text-default">☰</span>
++        </button>
++        <span className="font-medium">Reflections</span>
++      </header>
++
++      {/* Sidebar / Drawer */}
++      <aside
++        id="companions-drawer"
++        role="complementary"
++        className={clsx(
++          "z-50 md:z-auto md:static md:translate-x-0",
++          "h-full bg-surface border-r border-token",
++          "md:[width:var(--sidebar-w)] [width:var(--sidebar-w-sm)] [max-width:var(--sidebar-w-max)]",
++          "fixed top-0 left-0 transition-transform duration-200 ease-out",
++          open ? "translate-x-0" : "-translate-x-full",
++          "md:relative md:flex-shrink-0"
++        )}
++      >
++        {/* Drawer header (mobile only) */}
++        <div className="md:hidden flex items-center justify-between px-3 py-2 border-b border-token">
++          <span className="font-medium">Companions</span>
++          <button
++            className="h-9 w-9 grid place-items-center rounded-md border border-token"
++            aria-label="Close companions"
++            onClick={() => setOpen(false)}
++          >
++            ✕
++          </button>
++        </div>
++
++        <div className="[height:calc(100dvh-var(--topbar-h))] md:h-full overflow-y-auto">
++          {sidebar}
++        </div>
++      </aside>
++
++      {/* Backdrop */}
++      {open && (
++        <button
++          aria-label="Close companions"
++          onClick={() => setOpen(false)}
++          className="md:hidden fixed inset-0 z-40 bg-black/30"
++        />
++      )}
++
++      {/* Main chat */}
++      <main className="flex-1 min-w-0 flex flex-col">
++        <div className="hidden md:flex items-center gap-2 px-4 py-2 border-b border-token bg-surface">
++          <h1 className="text-lg font-medium">Chat</h1>
++        </div>
++        <div className="flex-1 min-h-0 bg-surface-muted">{children}</div>
++      </main>
++    </div>
++  );
++}
+diff --git a/src/components/Companions.tsx b/src/components/Companions.tsx
+index aaaaaaa..bbbbbbb 100644
+--- a/src/components/Companions.tsx
++++ b/src/components/Companions.tsx
+@@ -1,4 +1,5 @@
+-import React from "react";
++import React from "react";
++import clsx from "clsx";
+ 
+ type Item = {
+   id: string;
+@@ -11,11 +12,38 @@ type Item = {
+ const items: Item[] = [
+   { id: "jade",   name: "Jade",   desc: "Strategic Advisor",    color: "bg-[#6d5efc]" },
+   { id: "hermes", name: "Hermes", desc: "Quick Insights Guide", color: "bg-[#2ecc71]" },
+   { id: "eve",    name: "Eve",    desc: "Wellness Guide",       color: "bg-[#ff2e88]" },
+-  { id: "zeus",   name: "Zues",   desc: "Action Coach",         color: "bg-[#ff3b30]" },
++  { id: "zeus",   name: "Zeus",   desc: "Action Coach",         color: "bg-[#ff3b30]" }, // fixed spelling
+ ];
+ 
+ export default function Companions() {
+-  return <div>Companions list here</div>;
++  return (
++    <div className="p-3 space-y-3">
++      {items.map((i) => (
++        <button
++          key={i.id}
++          className={clsx(
++            "w-full text-left rounded-xl px-4 py-3 border transition",
++            "border-token bg-surface hover:bg-surface-muted",
++            "focus:outline-none focus:ring-2 focus:ring-[var(--brand)]",
++            i.active && "ring-2 ring-[var(--brand)] shadow-sm"
++          )}
++        >
++          <div className="flex items-center gap-3">
++            <span className={clsx("h-3 w-3 rounded-full", i.color)} />
++            <div>
++              <div className="font-semibold">{i.name}</div>
++              <div className="text-sm text-muted">{i.desc}</div>
++            </div>
++          </div>
++        </button>
++      ))}
++    </div>
++  );
+ }
+diff --git a/src/config/features.ts b/src/config/features.ts
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/src/config/features.ts
+@@ -0,0 +1,41 @@
++export type FeatureKey = "JADE" | "HERMES" | "EVE" | "ZEUS" | "BETA_REFLECTIONS";
++
++type FlagRule = {
++  enabled?: boolean;
++  allowRoles?: string[];
++  denyRoles?: string[];
++};
++
++const ENV = process.env.NEXT_PUBLIC_APP_TIER ?? "public"; // founders | public
++
++const BASE: Record<FeatureKey, FlagRule> = {
++  JADE:  { enabled: ENV === "founders", allowRoles: ["founder"] },
++  HERMES:{ enabled: ENV === "founders", allowRoles: ["founder"] },
++  EVE:   { enabled: ENV === "founders", allowRoles: ["founder"] },
++  ZEUS:  { enabled: ENV === "founders", allowRoles: ["founder","admin"] },
++  BETA_REFLECTIONS: { enabled: true, allowRoles: ["founder","beta","admin"] },
++};
++
++export function isFeatureOn(key: FeatureKey, roles: string[] = []): boolean {
++  const r = BASE[key]; if (!r?.enabled) return false;
++  if (r.denyRoles?.some(dr => roles.includes(dr))) return false;
++  if (!r.allowRoles || r.allowRoles.length === 0) return true;
++  return r.allowRoles.some(ar => roles.includes(ar));
++}
+diff --git a/src/stores/authStore.ts b/src/stores/authStore.ts
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/src/stores/authStore.ts
+@@ -0,0 +1,35 @@
++import { create } from "zustand";
++import { onAuth, getUser, isAuthenticated, logout, login } from "@/lib/auth";
++
++type AuthState = {
++  authenticated: boolean;
++  user: { id: string; email: string; name?: string | null; roles?: string[] } | null;
++  login: (email: string, password: string) => Promise<void>;
++  logout: () => Promise<void>;
++  hasRole: (role: string) => boolean;
++};
++
++export const useAuth = create<AuthState>((set, get) => {
++  set({ authenticated: isAuthenticated(), user: getUser(), login: async()=>{}, logout: async()=>{}, hasRole: ()=>false });
++
++  onAuth("change", ({ authenticated, user }: any) => set({ authenticated, user }));
++  onAuth("login",  ({ user }: any) => set({ authenticated: true, user }));
++  onAuth("logout", () => set({ authenticated: false, user: null }));
++
++  return {
++    authenticated: isAuthenticated(),
++    user: getUser(),
++    login: async (email, password) => { await login({ email, password }); },
++    logout: async () => { await logout(); },
++    hasRole: (role: string) => !!get().user?.roles?.includes(role),
++  };
++});
+diff --git a/src/lib/auth.ts b/src/lib/auth.ts
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/src/lib/auth.ts
+@@ -0,0 +1,190 @@
++export type JwtPayload = { sub: string; exp: number; roles?: string[]; tier?: string; [k: string]: any; };
++export type User = { id: string; email: string; name?: string | null; roles?: string[]; };
++export type AuthBundle = { accessToken: string; refreshToken?: string; user?: User };
++
++const AUTH_BASE = process.env.NEXT_PUBLIC_AUTH_BASE || "";
++const USE_COOKIE_REFRESH = (process.env.NEXT_PUBLIC_USE_COOKIE_REFRESH || "false") === "true";
++const CLOCK_SKEW_SEC = 30;
++
++type AuthEvent = "change" | "login" | "logout";
++type Listener<T = any> = (payload: T) => void;
++const listeners: Record<AuthEvent, Set<Listener>> = { change: new Set(), login: new Set(), logout: new Set() };
++
++export function onAuth<T = any>(event: AuthEvent, cb: Listener<T>) {
++  listeners[event].add(cb as Listener);
++  return () => listeners[event].delete(cb as Listener);
++}
++function emit<T>(event: AuthEvent, payload?: T) {
++  listeners[event].forEach(cb => { try { cb(payload); } catch {} });
++}
++
++const mem: Record<string, any> = {};
++const store = {
++  get<T>(k: string): T | null { try { return JSON.parse(localStorage.getItem(k)!) as T; } catch { return mem[k] ?? null; } },
++  set(k: string, v: any) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { mem[k] = v; } },
++  del(k: string) { try { localStorage.removeItem(k); } catch { mem[k] = null; } }
++};
++const KEYS = { access: "auth.access", refresh: "auth.refresh", user: "auth.user" };
++
++function parseJwt(token: string): JwtPayload | null {
++  try { return JSON.parse(atob(token.split(".")[1])) as JwtPayload; } catch { return null; }
++}
++function isExpired(token?: string | null) {
++  if (!token) return true;
++  const p = parseJwt(token); if (!p?.exp) return true;
++  const now = Math.floor(Date.now() / 1000);
++  return (p.exp - CLOCK_SKEW_SEC) <= now;
++}
++
++export function getAccessToken(){ return store.get<string>(KEYS.access); }
++export function getRefreshToken(){ return store.get<string>(KEYS.refresh); }
++export function getUser(){ return store.get<User>(KEYS.user); }
++export function isAuthenticated(){ const t = getAccessToken(); return !!t && !isExpired(t); }
++export function hasRole(role: string){ return !!getUser()?.roles?.includes(role); }
++
++async function postJson<T>(path: string, body?: any, headers: HeadersInit = {}): Promise<T> {
++  const res = await fetch(AUTH_BASE + path, {
++    method: "POST",
++    headers: { "Content-Type": "application/json", ...headers },
++    body: JSON.stringify(body || {}),
++    credentials: USE_COOKIE_REFRESH ? "include" : "same-origin"
++  });
++  if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText} — ${await res.text().catch(()=> "")}`);
++  return res.json() as Promise<T>;
++}
++
++function saveSession(bundle: Partial<AuthBundle>) {
++  if (bundle.accessToken) store.set(KEYS.access, bundle.accessToken);
++  if (!USE_COOKIE_REFRESH && bundle.refreshToken) store.set(KEYS.refresh, bundle.refreshToken);
++  if (bundle.user !== undefined) store.set(KEYS.user, bundle.user);
++  emit("change", { authenticated: isAuthenticated(), user: getUser() });
++}
++function clearSession() {
++  store.del(KEYS.access); store.del(KEYS.refresh); store.del(KEYS.user);
++  emit("change", { authenticated: false, user: null });
++}
++
++export async function register(payload: Record<string, any>) {
++  const data = await postJson<AuthBundle>("/auth/register", payload);
++  if (data.accessToken) saveSession(data);
++  return data;
++}
++export async function login(credentials: { email: string; password: string; }) {
++  const data = await postJson<AuthBundle>("/auth/login", credentials);
++  saveSession(data); emit("login", { user: data.user }); return data.user;
++}
++
++let refreshing: Promise<string> | null = null;
++export async function refresh(): Promise<string> {
++  if (refreshing) return refreshing;
++  refreshing = (async () => {
++    if (USE_COOKIE_REFRESH) {
++      const data = await postJson<AuthBundle>("/auth/refresh");
++      saveSession(data); return data.accessToken!;
++    } else {
++      const r = getRefreshToken(); if (!r) throw new Error("No refresh token");
++      const data = await postJson<AuthBundle>("/auth/refresh", { refreshToken: r });
++      saveSession(data); return data.accessToken!;
++    }
++  })().finally(() => { refreshing = null; });
++  return refreshing;
++}
++
++export async function logout() {
++  try {
++    if (USE_COOKIE_REFRESH) await postJson("/auth/logout", {});
++    else { const r = getRefreshToken(); if (r) await postJson("/auth/logout", { refreshToken: r }); }
++  } catch {}
++  clearSession(); emit("logout", {});
++}
++
++export async function authFetch(input: RequestInfo | URL, init: RequestInit = {}) {
++  let access = getAccessToken();
++  if (!access || isExpired(access)) { try { access = await refresh(); } catch { clearSession(); } }
++  const headers = new Headers(init.headers || {}); if (access) headers.set("Authorization", `Bearer ${access}`);
++  const res = await fetch(input, { ...init, headers, credentials: init.credentials || "same-origin" });
++
++  if (res.status === 401) {
++    try {
++      const newAccess = await refresh();
++      const retryHeaders = new Headers(init.headers || {}); retryHeaders.set("Authorization", `Bearer ${newAccess}`);
++      return await fetch(input, { ...init, headers: retryHeaders, credentials: init.credentials || "same-origin" });
++    } catch { clearSession(); }
++  }
++  return res;
++}
++
++export const api = {
++  get: (url: string) => authFetch(url, { method: "GET" }),
++  post: (url: string, body?: any) => authFetch(url, {
++    method: "POST",
++    headers: { "Content-Type": "application/json" },
++    body: JSON.stringify(body || {})
++  })
++};

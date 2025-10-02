@@ -1,0 +1,27 @@
+version: "3.9"
+services:
+  mock-ledger:
+    build:
+      context: ./mock-ledger
+    container_name: mock-ledger
+    ports:
+      - "8080:8080"
+    environment:
+      QUORUM: "150"
+      THRESHOLD_DEFAULT: "0.55"
+      THRESHOLD_DOCS: "0.50"
+      THRESHOLD_BREAKING: "0.66"
+      FREEZE: "false"
+      BIAS: ""
+      ADMIN_KEY: "${ADMIN_KEY:-changeme-local-admin}"
+
+  mcp-bridge:
+    build:
+      context: ./mcp-bridge
+    container_name: mcp-bridge
+    ports:
+      - "8081:8081"
+    environment:
+      MCP_SERVER_URL: "${MCP_SERVER_URL:-http://host.docker.internal:3001}"
+      BRIDGE_TOKEN: "${BRIDGE_TOKEN:-changeme-bridge-token}"
+      RATE_LIMIT_PER_HOUR: "100"

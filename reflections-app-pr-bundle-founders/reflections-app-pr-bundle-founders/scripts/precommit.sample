@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -e
+
+# Simple local pre-commit helper (optional).
+# Copy to .git/hooks/pre-commit and chmod +x to enable.
+# You can add lint/tests here or curl an n8n webhook.
+
+FILES=$(git diff --cached --name-only)
+if [ -z "$FILES" ]; then
+  exit 0
+fi
+
+echo "[pre-commit] Checking staged files:"
+echo "$FILES"
+
+# Example hooks (uncomment if you want)
+# npm run lint || { echo "Lint failed"; exit 1; }
+# npm test --silent || { echo "Tests failed"; exit 1; }
+
+exit 0

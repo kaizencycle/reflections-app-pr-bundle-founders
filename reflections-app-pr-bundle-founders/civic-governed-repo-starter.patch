@@ -1,0 +1,899 @@
+From 9f0e1ab Mon Sep 17 00:00:00 2001
+From: Cathedral Bootstrap <you@example.com>
+Date: Wed, 1 Oct 2025 20:15:00 -0400
+Subject: [PATCH] Civic-governed repo starter: constitution + vote gate + MCP bridge + agent scaffolds
+
+---
+ .github/workflows/civic-vote.yml              | 73 +++++++++++++++++++
+ .github/workflows/mcp-bridge-review.yml       | 89 +++++++++++++++++++++++
+ CODEOWNERS                                    | 14 ++++
+ SECURITY.md                                   | 24 ++++++
+ docs/adr/0001-constitution.md                 | 39 ++++++++++
+ policy/constitution.yml                       | 49 ++++++++++++
+ scripts/civic-vote.mjs                        | 92 +++++++++++++++++++++++
+ mcp-bridge/package.json                       | 18 +++++
+ mcp-bridge/index.mjs                          | 156 +++++++++++++++++++++++++++++++++++++++
+ mcp-bridge/Dockerfile                         | 12 +++
+ agents/hermes/README.md                       | 41 ++++++++++
+ agents/zeus/README.md                         | 44 +++++++++++
+ docker-compose.yml                            | 25 ++++++
+ render.yaml                                   | 35 +++++++++
+ 14 files changed, 711 insertions(+)
+ create mode 100644 .github/workflows/civic-vote.yml
+ create mode 100644 .github/workflows/mcp-bridge-review.yml
+ create mode 100644 CODEOWNERS
+ create mode 100644 SECURITY.md
+ create mode 100644 docs/adr/0001-constitution.md
+ create mode 100644 policy/constitution.yml
+ create mode 100644 scripts/civic-vote.mjs
+ create mode 100644 mcp-bridge/package.json
+ create mode 100644 mcp-bridge/index.mjs
+ create mode 100644 mcp-bridge/Dockerfile
+ create mode 100644 agents/hermes/README.md
+ create mode 100644 agents/zeus/README.md
+ create mode 100644 docker-compose.yml
+ create mode 100644 render.yaml
+
+diff --git a/.github/workflows/civic-vote.yml b/.github/workflows/civic-vote.yml
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/.github/workflows/civic-vote.yml
+@@ -0,0 +1,73 @@
++name: Civic Vote Gate
++on:
++  pull_request:
++    types: [opened, synchronize, labeled, reopened, edited]
++permissions:
++  contents: read
++  pull-requests: write
++jobs:
++  vote:
++    runs-on: ubuntu-latest
++    steps:
++      - name: Checkout
++        uses: actions/checkout@v4
++
++      - name: Setup Node
++        uses: actions/setup-node@v4
++        with:
++          node-version: '20'
++
++      - name: Civic vote evaluation
++        env:
++          LEDGER_URL: ${{ secrets.LEDGER_URL }}
++          LEDGER_TOKEN: ${{ secrets.LEDGER_TOKEN }}
++          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
++          REPO: ${{ github.repository }}
++          PR_NUMBER: ${{ github.event.pull_request.number }}
++        run: |
++          node scripts/civic-vote.mjs
++
++      - name: Require pass
++        id: require
++        run: |
++          test -f civic_vote_result.json || (echo "No result"; exit 1)
++          PASSED=$(jq -r '.passed' civic_vote_result.json)
++          echo "passed=$PASSED" >> $GITHUB_OUTPUT
++          if [ "$PASSED" != "true" ]; then
++            echo "Vote gate failed"; exit 1
++          fi
++
++      - name: Comment vote result
++        if: always()
++        env:
++          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
++        run: |
++          if [ -f civic_vote_result.json ]; then
++            cat > vote_comment.md <<'EOF'
++          ## 🏛️ Civic Vote Result
++          
++          EOF
++            
++            PASSED=$(jq -r '.passed' civic_vote_result.json)
++            YES=$(jq -r '.yes' civic_vote_result.json)
++            NO=$(jq -r '.no' civic_vote_result.json)
++            VOTES=$(jq -r '.votes' civic_vote_result.json)
++            QUORUM=$(jq -r '.quorum' civic_vote_result.json)
++            THRESHOLD=$(jq -r '.threshold' civic_vote_result.json)
++            LABEL_CLASS=$(jq -r '.labelClass' civic_vote_result.json)
++            
++            if [ "$PASSED" = "true" ]; then
++              echo "✅ **PASSED** - This PR meets civic governance requirements" >> vote_comment.md
++            else
++              echo "❌ **FAILED** - This PR does not meet civic governance requirements" >> vote_comment.md
++            fi
++            
++            echo "" >> vote_comment.md
++            echo "- **Votes:** ${YES} yes, ${NO} no (${VOTES} total)" >> vote_comment.md
++            echo "- **Quorum:** ${QUORUM} required, ${VOTES} participated" >> vote_comment.md
++            echo "- **Threshold:** ${THRESHOLD} required for ${LABEL_CLASS} changes" >> vote_comment.md
++            echo "- **Result:** $(echo "scale=2; $YES / $VOTES * 100" | bc -l)% approval" >> vote_comment.md
++            
++            gh pr comment ${{ github.event.pull_request.number }} --body-file vote_comment.md
++          fi
+diff --git a/.github/workflows/mcp-bridge-review.yml b/.github/workflows/mcp-bridge-review.yml
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/.github/workflows/mcp-bridge-review.yml
+@@ -0,0 +1,89 @@
++name: MCP Bridge AI Review
++on:
++  pull_request:
++    types: [opened, synchronize, reopened]
++permissions:
++  contents: read
++  pull-requests: write
++jobs:
++  mcp-review:
++    runs-on: ubuntu-latest
++    steps:
++      - name: Checkout
++        uses: actions/checkout@v4
++
++      - name: Setup Node
++        uses: actions/setup-node@v4
++        with:
++          node-version: '20'
++
++      - name: Install GitHub CLI
++        uses: cli/gh-action@v2
++
++      - name: Get PR diff
++        env:
++          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
++        run: |
++          gh pr diff ${{ github.event.pull_request.number }} --patch > pr_diff.patch
++          wc -c pr_diff.patch
++
++      - name: Build review prompt
++        run: |
++          cat > review_prompt.txt <<'PROMPT'
++          You are a civic-governance code reviewer with access to MCP tools. 
++          
++          Analyze this PR diff and:
++          1. Check for security vulnerabilities and auth bypasses
++          2. Verify civic governance rules aren't being weakened
++          3. Suggest improvements using available MCP tools
++          4. Flag any changes that need Elder/Founder approval
++          
++          Available MCP tools via bridge:
++          - codebase_search: semantic code analysis
++          - grep: pattern matching
++          - read_file: examine specific files
++          - web_search: research best practices
++          
++          Focus on governance, security, and architectural concerns.
++          PROMPT
++
++      - name: Call GitHub Models for planning
++        id: planning
++        env:
++          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
++        run: |
++          # Create input for GitHub Models
++          cat review_prompt.txt > model_input.txt
++          echo -e "\n\n--- PR DIFF ---\n" >> model_input.txt
++          cat pr_diff.patch >> model_input.txt
++          
++          # Call GitHub Models API
++          gh api -X POST "repos/${{ github.repository }}/models/runs" \
++            -f model="gpt-4o" \
++            -f input@"model_input.txt" \
++            -f max_tokens=2000 > model_response.json || {
++              echo "GitHub Models not available, using fallback review"
++              echo '{"output": "GitHub Models API unavailable. Manual review recommended."}' > model_response.json
++            }
++          
++          # Extract the model output
++          jq -r '.output // .result // .content // "No response"' model_response.json > model_plan.txt
++
++      - name: Execute MCP tools via bridge
++        env:
++          MCP_BRIDGE_URL: ${{ secrets.MCP_BRIDGE_URL }}
++          MCP_BRIDGE_TOKEN: ${{ secrets.MCP_BRIDGE_TOKEN }}
++        run: |
++          if [ -n "$MCP_BRIDGE_URL" ]; then
++            # Send model plan to MCP bridge for tool execution
++            curl -s -X POST "$MCP_BRIDGE_URL/execute" \
++              -H "Authorization: Bearer $MCP_BRIDGE_TOKEN" \
++              -H "Content-Type: application/json" \
++              -d @model_response.json > mcp_results.json || {
++                echo "MCP bridge unavailable, using model output only"
++                cp model_plan.txt mcp_results.json
++              }
++          else
++            echo "MCP bridge not configured, using model output only"
++            cp model_plan.txt mcp_results.json
++          fi
++
++      - name: Comment MCP-enhanced review
++        env:
++          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
++        run: |
++          cat > final_review.md <<'HEADER'
++          ## 🤖 MCP-Enhanced AI Review
++          
++          *Powered by GitHub Models + MCP Bridge*
++          
++          HEADER
++          
++          if [ -f mcp_results.json ]; then
++            echo "### Analysis Results" >> final_review.md
++            echo "" >> final_review.md
++            cat mcp_results.json >> final_review.md
++          else
++            echo "### Fallback Review" >> final_review.md
++            echo "" >> final_review.md
++            cat model_plan.txt >> final_review.md
++          fi
++          
++          echo "" >> final_review.md
++          echo "---" >> final_review.md
++          echo "*This review used MCP tools for enhanced analysis. Results are advisory only.*" >> final_review.md
++          
++          gh pr comment ${{ github.event.pull_request.number }} --body-file final_review.md
+diff --git a/CODEOWNERS b/CODEOWNERS
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/CODEOWNERS
+@@ -0,0 +1,14 @@
++# Civic Governance CODEOWNERS
++# Humans + agent apps can be owners. Adjust handles/team slugs to your org.
++
++# Default: require founder approval
++* @kaizencycle
++
++# Critical governance files require founders
++/policy/ @your-org/founders
++/scripts/ @your-org/founders
++/.github/ @your-org/founders
++/SECURITY.md @your-org/founders
++
++# Agent-managed areas
++/agents/hermes/ @bot-hermes
++/agents/zeus/ @bot-zeus
+diff --git a/SECURITY.md b/SECURITY.md
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/SECURITY.md
+@@ -0,0 +1,24 @@
++# Security Policy (Cathedral Civic Governance)
++
++## Branch Protection
++- `main` and `release/*` are protected branches
++- Required checks: `build`, `test`, `civic-vote`, `sast`, `license-scan`
++- Require signed commits and signed tags
++- Require pull request reviews from CODEOWNERS
++
++## Civic Vote Gate
++- All PRs must pass civic governance vote before merge
++- Thresholds defined in `policy/constitution.yml`
++- Emergency freeze capability via Elder multi-sig
++
++## MCP Bridge Security
++- MCP bridge server requires authentication token
++- Tool execution is sandboxed and logged
++- Rate limiting on tool calls per PR
++
++## Emergency Procedures
++- Elders multi-sig can enable 72h freeze via constitution
++- Security incidents bypass normal voting for hotfixes
++
++## Vulnerability Disclosure
++- Report privately to founders@yourdomain.tld
++- Do not open public issues for exploitable vulnerabilities
+diff --git a/docs/adr/0001-constitution.md b/docs/adr/0001-constitution.md
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/docs/adr/0001-constitution.md
+@@ -0,0 +1,39 @@
++# ADR-0001: Constitution & Civic Vote Gate
++
++## Status
++Accepted (Initial)
++
++## Context
++We want PR merges to reflect Civic governance principles:
++- GIC-weighted votes (or 1p1v during bootstrapping)
++- Thresholds based on change impact
++- Constitutional constraints on governance changes
++- Agent participation under same rules as humans
++
++## Decision
++- Store governance norms in `policy/constitution.yml`
++- Enforce via GitHub Action `civic-vote`
++- Vote snapshots from Cathedral Ledger via `LEDGER_URL`
++- MCP bridge enables AI agents to use same tools as Cursor
++
++## Architecture
++
++### Civic Vote Gate
++1. PR opened/updated triggers `civic-vote.yml`
++2. Action calls ledger API for vote snapshot
++3. Compares results against constitutional thresholds
++4. Blocks merge if quorum/majority unmet
++
++### MCP Bridge
++1. GitHub Models analyzes PR and plans tool usage
++2. MCP bridge server executes tools (codebase_search, grep, etc.)
++3. Results enhance AI review with actual codebase knowledge
++4. Same tools available to Cursor and CI/agents
++
++## Consequences
++### Positive
++- Higher legitimacy through democratic governance
++- Consistent tooling between development and automation
++- Constitutional constraints prevent governance capture
++
++### Negative
++- Slower merges if quorum unmet
++- Additional infrastructure complexity
+diff --git a/policy/constitution.yml b/policy/constitution.yml
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/policy/constitution.yml
+@@ -0,0 +1,49 @@
++# Civic Constitution (Cathedral Governance)
++# This file defines the rules for democratic governance of this repository
++
++version: 1
++
++# Voting system configuration
++voting:
++  mode: gic_weighted         # or one_person_one_vote during bootstrap
++  quorum: 150                # minimum voters required for valid vote
++  
++  # Approval thresholds by change type
++  thresholds:
++    default: 0.55            # simple majority for normal changes
++    breaking: 0.66           # supermajority for risky changes
++    docs: 0.50               # lighter threshold for documentation
++    governance: 0.75         # higher bar for constitution changes
++
++# Label-based change classification
++labels:
++  breaking: ["breaking", "security", "consensus-change", "api-change"]
++  docs: ["docs", "readme", "documentation"]
++  governance: ["constitution", "governance", "voting"]
++
++# Time-based restrictions
++windows:
++  change_freeze:
++    enabled: true
++    schedule: "FRI 18:00..MON 09:00 UTC"  # freeze merges except hotfix
++    exceptions: ["hotfix", "security"]
++
++# Emergency procedures
++emergency_freeze:
++  enabled: true
++  duration_hours: 72
++  # Multi-sig approvers who can trigger emergency freeze
++  multisig_approvers: 
++    - "founder:alice"
++    - "elder:beta" 
++    - "elder:gamma"
++  required_signatures: 2
++
++# Agent governance
++agents:
++  # Agents must follow same voting rules
++  subject_to_vote: true
++  # Rate limits for agent PRs
++  rate_limits:
++    hermes: 5   # max PRs per day
++    zeus: 3     # max PRs per day
++  # Agents cannot modify governance files without human sponsor
++  restricted_paths: ["/policy/", "/.github/workflows/civic-vote.yml", "/SECURITY.md"]
+diff --git a/scripts/civic-vote.mjs b/scripts/civic-vote.mjs
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/scripts/civic-vote.mjs
+@@ -0,0 +1,92 @@
++import fs from 'node:fs';
++import path from 'node:path';
++import process from 'node:process';
++import https from 'node:https';
++
++const { LEDGER_URL, LEDGER_TOKEN, REPO, PR_NUMBER } = process.env;
++if (!LEDGER_URL || !LEDGER_TOKEN || !REPO || !PR_NUMBER) {
++  console.error("Missing env vars: LEDGER_URL, LEDGER_TOKEN, REPO, PR_NUMBER");
++  process.exit(1);
++}
++
++// Load constitution
++const consPath = path.join(process.cwd(), 'policy', 'constitution.yml');
++const consText = fs.existsSync(consPath) ? fs.readFileSync(consPath, 'utf8') : '';
++
++// Parse constitution for thresholds (simple YAML parsing)
++const thresholds = {
++  default: 0.55,
++  breaking: 0.66,
++  docs: 0.50,
++  governance: 0.75
++};
++
++if (consText) {
++  const thresholdMatch = consText.match(/thresholds:\s*\n((?:\s+\w+:\s*[\d.]+\s*\n?)*)/);
++  if (thresholdMatch) {
++    const thresholdLines = thresholdMatch[1].match(/\s+(\w+):\s*([\d.]+)/g);
++    if (thresholdLines) {
++      thresholdLines.forEach(line => {
++        const [, key, value] = line.match(/\s+(\w+):\s*([\d.]+)/);
++        thresholds[key] = parseFloat(value);
++      });
++    }
++  }
++}
++
++// Determine label class from GitHub event
++let labelClass = 'default';
++try {
++  const evt = JSON.parse(fs.readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'));
++  const labels = (evt.pull_request?.labels || []).map(l => l.name.toLowerCase());
++  
++  if (labels.some(l => ['constitution', 'governance', 'voting'].includes(l))) {
++    labelClass = 'governance';
++  } else if (labels.some(l => ['breaking', 'security', 'consensus-change', 'api-change'].includes(l))) {
++    labelClass = 'breaking';
++  } else if (labels.some(l => ['docs', 'readme', 'documentation'].includes(l))) {
++    labelClass = 'docs';
++  }
++} catch (e) {
++  console.warn("Could not parse GitHub event, using default label class");
++}
++
++function httpGetJSON(url) {
++  return new Promise((resolve, reject) => {
++    const req = https.request(url, { 
++      method: 'GET', 
++      headers: { 
++        'Authorization': `Bearer ${LEDGER_TOKEN}`,
++        'User-Agent': 'civic-vote-gate/1.0'
++      }
++    }, res => {
++      let data = '';
++      res.on('data', c => data += c);
++      res.on('end', () => {
++        try { 
++          resolve(JSON.parse(data)); 
++        } catch (e) { 
++          reject(new Error(`Invalid JSON response: ${data}`)); 
++        }
++      });
++    });
++    req.on('error', reject);
++    req.setTimeout(30000, () => reject(new Error('Request timeout')));
++    req.end();
++  });
++}
++
++// Query ledger for vote snapshot
++const url = `${LEDGER_URL}/vote/snapshot?repo=${encodeURIComponent(REPO)}&pr=${encodeURIComponent(PR_NUMBER)}&class=${labelClass}`;
++console.log(`Querying ledger: ${url}`);
++
++try {
++  const result = await httpGetJSON(url);
++  const { yes = 0, no = 0, quorum = 150, freeze = false } = result;
++  const threshold = thresholds[labelClass] || thresholds.default;
++  const votes = yes + no;
++  const ratio = votes ? (yes / votes) : 0;
++  const passed = !freeze && votes >= quorum && ratio >= threshold;
++
++  const output = { yes, no, quorum, threshold, votes, ratio, labelClass, freeze, passed };
++  fs.writeFileSync('civic_vote_result.json', JSON.stringify(output, null, 2));
++  console.log("CIVIC-VOTE RESULT:", output);
++  
++  if (!passed) {
++    console.error(`Vote failed: ${votes}/${quorum} quorum, ${(ratio*100).toFixed(1)}%/${(threshold*100).toFixed(1)}% threshold`);
++    process.exit(1);
++  }
++} catch (error) {
++  console.error("Ledger query failed:", error.message);
++  // Fail safe: if ledger is down, require manual review
++  const output = { error: error.message, passed: false, manual_review_required: true };
++  fs.writeFileSync('civic_vote_result.json', JSON.stringify(output, null, 2));
++  process.exit(1);
++}
+diff --git a/mcp-bridge/package.json b/mcp-bridge/package.json
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/mcp-bridge/package.json
+@@ -0,0 +1,18 @@
++{
++  "name": "mcp-bridge",
++  "version": "0.1.0",
++  "type": "module",
++  "main": "index.mjs",
++  "scripts": {
++    "start": "node index.mjs",
++    "dev": "node --watch index.mjs"
++  },
++  "dependencies": {
++    "express": "^4.19.2",
++    "cors": "^2.8.5",
++    "node-fetch": "^3.3.2"
++  },
++  "engines": {
++    "node": ">=20"
++  }
++}
+diff --git a/mcp-bridge/index.mjs b/mcp-bridge/index.mjs
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/mcp-bridge/index.mjs
+@@ -0,0 +1,156 @@
++import express from "express";
++import cors from "cors";
++import fetch from "node-fetch";
++
++const app = express();
++app.use(cors());
++app.use(express.json({ limit: '10mb' }));
++
++// Configuration
++const {
++  PORT = 8081,
++  MCP_SERVER_URL = "http://localhost:3001",  // Your MCP server
++  BRIDGE_TOKEN = process.env.BRIDGE_TOKEN || "",
++  RATE_LIMIT_PER_HOUR = 100
++} = process.env;
++
++// Simple rate limiting
++const rateLimits = new Map();
++
++function checkRateLimit(clientId) {
++  const now = Date.now();
++  const hour = Math.floor(now / (1000 * 60 * 60));
++  const key = `${clientId}:${hour}`;
++  
++  const count = rateLimits.get(key) || 0;
++  if (count >= RATE_LIMIT_PER_HOUR) {
++    return false;
++  }
++  
++  rateLimits.set(key, count + 1);
++  return true;
++}
++
++// Auth middleware
++function requireAuth(req, res, next) {
++  const token = req.headers.authorization?.replace('Bearer ', '') || req.query.token;
++  if (!BRIDGE_TOKEN || token !== BRIDGE_TOKEN) {
++    return res.status(401).json({ error: "Unauthorized" });
++  }
++  next();
++}
++
++// Health check
++app.get("/", (req, res) => {
++  res.json({ 
++    status: "MCP Bridge OK", 
++    version: "1.0.0",
++    mcp_server: MCP_SERVER_URL,
++    endpoints: ["/execute", "/tools", "/health"]
++  });
++});
++
++app.get("/health", (req, res) => {
++  res.json({ status: "healthy", timestamp: new Date().toISOString() });
++});
++
++// List available MCP tools
++app.get("/tools", requireAuth, async (req, res) => {
++  try {
++    const response = await fetch(`${MCP_SERVER_URL}/tools`, {
++      method: 'POST',
++      headers: { 'Content-Type': 'application/json' },
++      body: JSON.stringify({
++        jsonrpc: "2.0",
++        id: 1,
++        method: "tools/list"
++      })
++    });
++    
++    const data = await response.json();
++    res.json(data.result || data);
++  } catch (error) {
++    res.status(500).json({ error: "Failed to fetch tools", details: error.message });
++  }
++});
++
++// Execute MCP tool calls
++app.post("/execute", requireAuth, async (req, res) => {
++  const clientId = req.ip || 'unknown';
++  
++  if (!checkRateLimit(clientId)) {
++    return res.status(429).json({ error: "Rate limit exceeded" });
++  }
++
++  try {
++    const { tool_calls, context } = req.body;
++    
++    if (!tool_calls || !Array.isArray(tool_calls)) {
++      return res.status(400).json({ error: "Missing or invalid tool_calls array" });
++    }
++
++    const results = [];
++    
++    for (const toolCall of tool_calls) {
++      const { name, arguments: args } = toolCall;
++      
++      console.log(`Executing MCP tool: ${name}`, args);
++      
++      try {
++        const mcpResponse = await fetch(`${MCP_SERVER_URL}/tools`, {
++          method: 'POST',
++          headers: { 'Content-Type': 'application/json' },
++          body: JSON.stringify({
++            jsonrpc: "2.0",
++            id: Date.now(),
++            method: "tools/call",
++            params: {
++              name,
++              arguments: args
++            }
++          }),
++          timeout: 30000
++        });
++        
++        const mcpData = await mcpResponse.json();
++        
++        if (mcpData.error) {
++          results.push({
++            tool: name,
++            success: false,
++            error: mcpData.error.message || "MCP tool error"
++          });
++        } else {
++          results.push({
++            tool: name,
++            success: true,
++            result: mcpData.result
++          });
++        }
++      } catch (toolError) {
++        console.error(`Tool ${name} failed:`, toolError);
++        results.push({
++          tool: name,
++          success: false,
++          error: toolError.message
++        });
++      }
++    }
++    
++    res.json({
++      success: true,
++      results,
++      context,
++      timestamp: new Date().toISOString()
++    });
++    
++  } catch (error) {
++    console.error("Bridge execution error:", error);
++    res.status(500).json({ 
++      error: "Bridge execution failed", 
++      details: error.message 
++    });
++  }
++});
++
++app.listen(PORT, () => {
++  console.log(`MCP Bridge listening on :${PORT}`);
++  console.log(`MCP Server: ${MCP_SERVER_URL}`);
++  console.log(`Auth: ${BRIDGE_TOKEN ? 'Enabled' : 'Disabled'}`);
++});
+diff --git a/mcp-bridge/Dockerfile b/mcp-bridge/Dockerfile
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/mcp-bridge/Dockerfile
+@@ -0,0 +1,12 @@
++FROM node:20-alpine
++WORKDIR /app
++COPY package.json package-lock.json* ./
++RUN npm ci --no-audit --no-fund
++COPY . .
++EXPOSE 8081
++
++# Environment variables (set at runtime)
++ENV MCP_SERVER_URL=""
++ENV BRIDGE_TOKEN=""
++
++CMD ["npm", "start"]
+diff --git a/agents/hermes/README.md b/agents/hermes/README.md
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/agents/hermes/README.md
+@@ -0,0 +1,41 @@
++# Hermes (Docs & Tests Agent) — Scaffold
++
++**Role:** Opens PRs that improve docs/tests and adds commentary on open PRs.
++
++## GitHub App Setup
++
++Operate this as a GitHub App with least privileges:
++- **Permissions:** Read/Write on Issues, Pull Requests, Contents (only in this repo)
++- **Webhooks:** `pull_request`, `issues`, `issue_comment`, `push`
++- **Installation:** Single repository or organization
++
++## Behavior
++
++1. **On `push`:** Scan diff for missing documentation or test coverage
++2. **Open PR:** Title format `hermes: <short summary>`
++3. **Never merge:** Relies on **civic-vote** gate + maintainer approval
++4. **Respect constitution:** No changes to governance files without human sponsor
++
++## MCP Integration
++
++Hermes can use the same MCP tools as Cursor:
++- `codebase_search`: Find related documentation
++- `grep`: Search for test patterns
++- `read_file`: Analyze existing docs
++- `web_search`: Research best practices
++
++## Configuration
++
++Store agent policies in `/agents/hermes/policy/`:
++- `prompts.yml`: System prompts and constraints
++- `rules.yml`: What Hermes can/cannot do
++- `templates/`: PR and comment templates
++
++## Rate Limits
++
++Per `policy/constitution.yml`:
++- Max 5 PRs per day
++- Cannot modify `/policy/`, `/.github/workflows/civic-vote.yml`, `/SECURITY.md`
++
++## Audit Trail
++
++All Hermes actions are logged publicly for transparency and accountability.
+diff --git a/agents/zeus/README.md b/agents/zeus/README.md
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/agents/zeus/README.md
+@@ -0,0 +1,44 @@
++# Zeus (Issue→PR Agent) — Scaffold
++
++**Role:** Converts tagged issues into draft PRs with passing CI.
++
++## GitHub App Setup
++
++Operate as a GitHub App with focused permissions:
++- **Permissions:** Read/Write on Issues, Pull Requests, Checks
++- **Webhooks:** `issues` (labeled), `issue_comment`
++- **Trigger Labels:** `good-first-issue`, `zeus-ready`
++
++## Behavior
++
++1. **On issue labeled `zeus-ready`:** Create branch `zeus/<issue-#>`
++2. **Generate change set:** Minimal implementation + tests
++3. **Open draft PR:** Links back to original issue
++4. **Pass to civic-vote:** All Zeus PRs subject to same governance
++5. **Elder sponsor required:** For `breaking` label changes
++
++## MCP Tool Usage
++
++Zeus leverages MCP bridge for implementation:
++- `codebase_search`: Understand existing patterns
++- `grep`: Find similar implementations
++- `read_file`: Study related code
++- `web_search`: Research implementation approaches
++
++## Safety Constraints
++
++Per constitution:
++- **Rate limit:** Max 3 PRs per 24h
++- **Restricted paths:** Cannot modify governance files
++- **Human sponsor:** Required for breaking changes
++- **Draft only:** Never auto-merges
++
++## Issue Format
++
++For Zeus to process an issue, it should include:
++```markdown
++## Acceptance Criteria
++- [ ] Specific, testable requirements
++
++## Implementation Notes
++- Suggested approach or constraints
++```
++
++## Quality Gates
++
++All Zeus PRs must:
++1. Pass existing CI/CD pipeline
++2. Include appropriate tests
++3. Meet civic vote requirements
++4. Have human review before merge
+diff --git a/docker-compose.yml b/docker-compose.yml
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/docker-compose.yml
+@@ -0,0 +1,25 @@
++version: "3.9"
++services:
++  mock-ledger:
++    build:
++      context: ./mock-ledger
++    container_name: mock-ledger
++    ports:
++      - "8080:8080"
++    environment:
++      QUORUM: "150"
++      THRESHOLD_DEFAULT: "0.55"
++      THRESHOLD_DOCS: "0.50"
++      THRESHOLD_BREAKING: "0.66"
++      FREEZE: "false"
++      BIAS: ""
++      ADMIN_KEY: "${ADMIN_KEY:-changeme-local-admin}"
++
++  mcp-bridge:
++    build:
++      context: ./mcp-bridge
++    container_name: mcp-bridge
++    ports:
++      - "8081:8081"
++    environment:
++      MCP_SERVER_URL: "${MCP_SERVER_URL:-http://host.docker.internal:3001}"
++      BRIDGE_TOKEN: "${BRIDGE_TOKEN:-changeme-bridge-token}"
++      RATE_LIMIT_PER_HOUR: "100"
+diff --git a/render.yaml b/render.yaml
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/render.yaml
+@@ -0,0 +1,35 @@
++services:
++  - type: web
++    name: mock-ledger
++    env: node
++    plan: free
++    region: oregon
++    buildCommand: "npm ci --no-audit --no-fund"
++    startCommand: "npm start"
++    autoDeploy: true
++    rootDir: mock-ledger
++    envVars:
++      - key: QUORUM
++        value: "150"
++      - key: THRESHOLD_DEFAULT
++        value: "0.55"
++      - key: THRESHOLD_DOCS
++        value: "0.50"
++      - key: THRESHOLD_BREAKING
++        value: "0.66"
++      - key: FREEZE
++        value: "false"
++      - key: BIAS
++        value: ""
++      - key: ADMIN_KEY
++        sync: false   # set in Render dashboard as secret
++
++  - type: web
++    name: mcp-bridge
++    env: node
++    plan: free
++    region: oregon
++    buildCommand: "npm ci --no-audit --no-fund"
++    startCommand: "npm start"
++    autoDeploy: true
++    rootDir: mcp-bridge
++    envVars:
++      - key: MCP_SERVER_URL
++        sync: false   # set to your MCP server URL
++      - key: BRIDGE_TOKEN
++        sync: false   # set as secret in Render dashboard
++      - key: RATE_LIMIT_PER_HOUR
++        value: "100"
