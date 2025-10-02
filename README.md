@@ -1,4 +1,48 @@
-# Reflections App
+# 🏛 Reflections App — Founder's Core
+
+![Build](https://img.shields.io/github/actions/workflow/status/kaizencycle/reflections-app-pr-bundle-founders/ci.yml?style=for-the-badge&logo=github&label=BUILD)
+![PR Size](https://img.shields.io/badge/PR%20Size-Auto--Labeled-8A2BE2?style=for-the-badge&logo=git&logoColor=white)
+![Auto Merge](https://img.shields.io/badge/Auto--Merge-Hermes+Zeus-FFD700?style=for-the-badge&logo=githubactions&logoColor=black)
+![Safe Merge](https://img.shields.io/badge/Safe--to--Merge-Enabled-32CD32?style=for-the-badge&logo=checkmarx&logoColor=white)
+![Governance](https://img.shields.io/badge/Governance-Cathedral%20OS-1E90FF?style=for-the-badge&logo=castle&logoColor=white)
+
+## 🧭 What is this?
+
+This is the **Founder's Lab Chamber** of the Cathedral OS.  
+It governs **all Labs & Chambers** (Lab4: Research, Lab6: Ethics, Lab7: Health, etc.) using encoded governance.
+
+- **Hermes** ✍️ — logs, labels PRs, and tracks history  
+- **Zeus** ⚡ — arbitrates merges, enforces guardrails, and removes unsafe labels  
+
+Here, **PRs are civic proposals**.  
+Checks = deliberation.  
+Merge = motion passed.  
+
+## 🧪 Why it exists
+
+This is the **proving ground** for AI-native governance.  
+The Founder's Core tests rules and builds the Cathedral OS before it becomes public.
+
+## 🚀 How it works
+
+1. **Open a PR**  
+   - Hermes auto-labels size (`XS` → `XL`) and trivial/safe-to-merge  
+   - AI reviewer leaves notes  
+2. **Checks run**  
+   - All must pass  
+3. **Zeus arbitrates**  
+   - If `auto-merge` or `safe-to-merge`, GitHub auto-merges once green  
+   - If checks fail, labels are stripped automatically
+
+---
+
+## 🎮 Game Integration
+
+This repo is the **operating system** for the HIVE 16-bit game world:
+- Quest completions → PRs to ledger
+- Shard discoveries → commits to history  
+- Citizen actions → governance proposals
+- XP/GIC → stake in civic decisions
 
 Two deployments:
 
