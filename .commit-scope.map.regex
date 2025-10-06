@@ -1,0 +1,19 @@
+# Per-repo scope overrides for reflections-app-pr-bundle-founders
+# These rules take precedence over global rules
+
+# Reflections App specific overrides
+^reflections-app-pr-bundle-founders/ => reflections-app ; weight=100
+^reflections-app-pr-bundle-founders/src/ => reflections-src ; weight=95
+^reflections-app-pr-bundle-founders/agents/ => reflections-agents ; weight=90
+
+# Special cases for this repo
+^civic-vote\.mjs$ => civic-governance ; weight=100
+^companions-sidebar\.patch$ => companions ; weight=90
+^PR-bundle\.patch$ => pr-bundle ; weight=90
+^civic-governed-repo-starter\.patch$ => governance-starter ; weight=90
+
+# Redaction system (highest priority)
+^\.redaction/forbidden\.regex$ => redaction-config ; weight=100
+^\.redaction/allowlist\.regex$ => redaction-config ; weight=100
+^scripts/redaction-scan\.(sh|ps1)$ => redaction-scan ; weight=95
+^scripts/setup-redaction\.ps1$ => redaction-setup ; weight=95

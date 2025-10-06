@@ -1,0 +1,48 @@
+# Global scope mapping for Kaizen projects
+# Format: REGEX => scope [; weight=NN]
+
+# Reflections App specific
+^src/pages/FoundersDemo\.jsx$ => founders-demo ; weight=95
+^src/pages/ReflectionsPage\.jsx$ => reflections ; weight=95
+^src/components/Companions\.tsx$ => companions ; weight=90
+^src/components/AppLayout\.tsx$ => layout ; weight=85
+^src/stores/authStore\.ts$ => auth ; weight=90
+^src/lib/auth\.ts$ => auth ; weight=90
+^src/lib/api\.js$ => api ; weight=85
+^src/config/features\.ts$ => config ; weight=80
+
+# Agents
+^agents/hermes/ => hermes ; weight=95
+^agents/zeus/ => zeus ; weight=95
+
+# MCP Bridge
+^mcp-bridge/ => mcp-bridge ; weight=90
+
+# Policy & Governance
+^policy/ => policy ; weight=95
+^\.github/workflows/ => ci ; weight=95
+^\.github/CODEOWNERS$ => ci ; weight=90
+^\.github/SECURITY\.md$ => security ; weight=90
+
+# Documentation
+^docs/ => docs ; weight=80
+^README\.md$ => docs ; weight=85
+
+# Scripts & Build
+^scripts/ => build ; weight=70
+^package\.json$ => build ; weight=85
+^tailwind\.config\.js$ => build ; weight=75
+^postcss\.config\.js$ => build ; weight=75
+^docker-compose\.yml$ => build ; weight=80
+^Dockerfile$ => build ; weight=90
+
+# Redaction System
+^\.redaction/ => redaction ; weight=95
+^\.githooks/ => git-hooks ; weight=90
+
+# General patterns
+^src/components/ => components ; weight=60
+^src/pages/ => pages ; weight=60
+^src/lib/ => lib ; weight=60
+^src/stores/ => stores ; weight=60
+^src/config/ => config ; weight=60
