@@ -47,15 +47,9 @@ Do NOT modify sensitive areas:
 - scripts/civic-vote.mjs
 
 Only output ONE fenced code block containing the unified diff (no prose).
-Fence it with ```diff (or ```patch) and include proper headers (---/+++), e.g.:
-```diff
---- a/file.js
-+++ b/file.js
-@@ -1,3 +1,3 @@
--old
-+new
-```
-TXT
+Fence it with ```diff (or ```patch) and include proper headers (---/+++), for example:
+--- old
++++ new
 
       - name: Call model to propose tiny patch (GitHub Models if available; else OpenAI)
         id: call

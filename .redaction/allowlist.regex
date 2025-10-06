@@ -1,0 +1,10 @@
+(?i)\becho\s+server\b
+|(?i)\becho\s+endpoint\b
+|(?i)\becho\s+websocket\b
+|(?i)\bconcordance\b
+|(?i)\bresonance\s+frequency\b
+|(?i)\bvirtue\b(?!\s+accords)
+|(?i)\bautosweep\s+test\b
+|(?i)\bserver-sent\s+events\b
+|(?i)\bcathedral\b(?!\s+os)
+|(?i)\bfounder\b(?!['']s\s+(core|lab\s+chamber))
