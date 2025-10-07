@@ -1,0 +1,13 @@
+:root {
+  --bg:#0b0b10; --gold:#d9c587; --text:#eae6da; --accent:#1a1a22; --radius:12px; --t:0.3s ease;
+  font-family:"Playfair Display","Times New Roman",serif;
+}
+*{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--text)}
+h1,h2{color:var(--gold);letter-spacing:.02em}
+button{background:var(--gold);color:var(--bg);border:0;border-radius:var(--radius);padding:10px 18px;
+  font-family:Inter,system-ui,sans-serif;font-weight:600;transition:var(--t);cursor:pointer}
+button:hover{filter:brightness(1.06);transform:translateY(-1px)}
+input{width:100%;background:var(--accent);border:1px solid #2a2a33;color:var(--text);
+  padding:10px;border-radius:var(--radius);font-family:Inter,system-ui,sans-serif}
+main{animation:fadeIn .6s ease}
+@keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
