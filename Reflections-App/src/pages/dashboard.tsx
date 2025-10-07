@@ -1,45 +1,40 @@
 import { useEffect, useState } from "react";
-import { apiFetch } from "../lib/api";
+import { pingAgents, speakToAgent } from "../lib/agents";
 import { clearToken } from "../lib/auth";
 
-export default function Dashboard() {
-  const [agents, setAgents] = useState<string[]>([]);
-  const [prompt, setPrompt] = useState("");
-  const [reply, setReply] = useState("");
+export default function Dashboard(){
+  const [agents,setAgents] = useState<string[]>([]);
+  const [prompt,setPrompt] = useState("");
+  const [reply,setReply]   = useState("");
 
   useEffect(() => {
-    apiFetch("/agents/ping").then(j => setAgents(j.agents || [])).catch(console.error);
+    pingAgents().then(j => setAgents(j.agents || [])).catch(console.error);
   }, []);
 
-  async function speak(agent: string) {
+  async function speak(name: string) {
     setReply("");
     try {
-      const j = await apiFetch(`/agents/message/${agent}`, {
-        method:"POST",
-        body: JSON.stringify({ prompt }),
-      });
+      const j = await speakToAgent(name, prompt);
       setReply(j.reply || JSON.stringify(j));
-    } catch (e: any) {
-      setReply(e.message || "error");
-    }
+    } catch (e:any) { setReply(e.message || "error"); }
   }
 
   return (
-    <main style={{padding:24,color:"#e9e6da",background:"#0b0b10",minHeight:"100vh"}}>
+    <main style={{padding:24,minHeight:"100vh"}}>
       <header style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
         <h1>Founder’s PAW</h1>
-        <button onClick={()=>{ clearToken(); window.location.href="/login"; }}>Logout</button>
+        <button onClick={()=>{ clearToken(); location.href="/login"; }}>Logout</button>
       </header>
 
       <section style={{marginTop:24}}>
         <h2>Agents</h2>
-        <p>{agents.join(" · ")}</p>
+        <p>{agents.length ? agents.join(" · ") : "Loading…"}</p>
       </section>
 
-      <section style={{marginTop:24}}>
+      <section style={{marginTop:24,maxWidth:720}}>
         <h2>Speak</h2>
-        <input placeholder="Ask Jade…" value={prompt} onChange={e=>setPrompt(e.target.value)} style={{width:"100%",margin:"8px 0"}}/>
-        <div style={{display:"flex",gap:8}}>
+        <input placeholder="Ask Jade…" value={prompt} onChange={e=>setPrompt(e.target.value)} />
+        <div style={{display:"flex",gap:8,marginTop:8}}>
           <button onClick={()=>speak("Jade")}>Jade</button>
           <button onClick={()=>speak("Eve")}>Eve</button>
           <button onClick={()=>speak("Zeus")}>Zeus</button>
